@@ -17,6 +17,7 @@ const MUZZLE_DEVICES = {
         url:            'supressor_sample.stl',
         projectionAxis: 'y',         // top-down (XZ plane)
         projectionMode: 'section',   // axial cross-section: walls + baffles + bore
+        units:          'mm',
     },
     muzzle_brake: {
         id:             'muzzle_brake',
@@ -24,6 +25,7 @@ const MUZZLE_DEVICES = {
         url:            'muzzle-break-sample.stl',
         projectionAxis: 'y',
         projectionMode: 'section',
+        units:          'mm',
     },
 };
 
@@ -45,6 +47,10 @@ let deviceSource = null;
 let deviceAxis  = 'y';                              // 'x' | 'y' | 'z'
 let deviceMode  = 'section';                        // 'section' | 'silhouette'
 let deviceXform = { flipX: false, flipY: false, rotate: 0 };  // rotate ∈ {0,90,180,270}
+// Mesh unit interpretation. STLs carry no unit metadata. Default is inch
+// (firearm CAD convention); built-in samples override this via their own
+// `units` field. Toggle re-voxelizes.
+let deviceUnits = 'inch';                           // 'mm' | 'inch'
 
 // Playback state machine
 let playbackState = 'idle';  // 'idle' | 'playing' | 'paused'
@@ -73,6 +79,7 @@ const deviceFileInput= document.getElementById('device-file');
 const deviceUploadBtn= document.getElementById('device-upload-btn');
 const axisButtons    = document.querySelectorAll('.opt-btn[data-axis]');
 const modeButtons    = document.querySelectorAll('.opt-btn[data-mode]');
+const unitsButtons   = document.querySelectorAll('.opt-btn[data-units]');
 const xformFlipXBtn  = document.getElementById('xform-flipx');
 const xformFlipYBtn  = document.getElementById('xform-flipy');
 const xformRotateBtn = document.getElementById('xform-rotate');
@@ -90,6 +97,9 @@ const debugInboreCb    = document.getElementById('debug-inbore-enabled');
 const debugSmokeCb     = document.getElementById('debug-smoke-enabled');
 const debugSplatLosCb  = document.getElementById('debug-splat-los');
 const debugBloomLosCb  = document.getElementById('debug-bloom-los');
+const debugBloomCb     = document.getElementById('debug-bloom-enabled');
+const debugCurlCb      = document.getElementById('debug-curl-enabled');
+const debugBulletBorderCb = document.getElementById('debug-bullet-border-enabled');
 const debugGasForceRange  = document.getElementById('debug-gas-force');
 const debugGasForceVal    = document.getElementById('debug-gas-force-val');
 const debugGasRatioRange  = document.getElementById('debug-gas-ratio');
@@ -162,14 +172,18 @@ FluidSim.setBeforeStepCallback(function (dt) {
     // the instant the bullet's tail clears the muzzle.
     applyPhaseDissipation();
 
-    // Gate bloom along sim-time so the glow doesn't show during the in-bore
-    // push. During FIRING: 0 until simMs ≥ muzzleExitMs + bloomOnsetOffsetMs,
+    // Gate the flash glow along sim-time so it doesn't show during the in-bore
+    // push — the user-visible glow belongs to muzzle exit, not the initial
+    // bore push. During FIRING: 0 until simMs ≥ muzzleExitMs + bloomOnsetOffsetMs,
     // then ramps linearly over bloomFadeInMs. Between shots (IDLE): full.
+    // If the Flash-glow feature toggle is off, gate is forced to 0 — no halo.
     {
         const preset = CALIBER_PRESETS[selectedCaliberId];
         const cfg = window.DEBUG_CONFIG;
         let gate = 1.0;
-        if (fireSequencer.isActive) {
+        if (!cfg.bloomEnabled) {
+            gate = 0;
+        } else if (fireSequencer.isActive) {
             const tOn = fireSequencer.muzzleExitMs + cfg.bloomOnsetOffsetMs;
             const dT = fireSequencer.simMs - tOn;
             if (dT < 0) gate = 0;
@@ -242,10 +256,12 @@ function selectSampleDevice(id) {
         return;
     }
 
-    // Adopt the sample's preferred projection so it loads correctly on first
-    // click. User can still tweak axis/mode after via the option buttons.
+    // Adopt the sample's preferred projection + units so it loads correctly
+    // on first click. User can still tweak axis/mode/units after via the
+    // option buttons.
     deviceAxis = device.projectionAxis;
     deviceMode = device.projectionMode;
+    if (device.units) deviceUnits = device.units;
     syncOptionButtons();
 
     deviceSource = { kind: 'sample', id: device.id, url: device.url, label: device.label };
@@ -279,6 +295,7 @@ function reloadDeviceSource() {
         flipX:  deviceXform.flipX,
         flipY:  deviceXform.flipY,
         rotate: deviceXform.rotate,
+        units:  deviceUnits,
     };
 
     const p = (deviceSource.kind === 'sample')
@@ -318,6 +335,14 @@ modeButtons.forEach(btn => {
     });
 });
 
+unitsButtons.forEach(btn => {
+    btn.addEventListener('click', () => {
+        deviceUnits = btn.dataset.units;
+        syncOptionButtons();
+        reloadDeviceSource();
+    });
+});
+
 xformFlipXBtn.addEventListener('click', () => {
     deviceXform.flipX = !deviceXform.flipX;
     syncOptionButtons();
@@ -341,6 +366,8 @@ function syncOptionButtons() {
         b.classList.toggle('active', b.dataset.axis === deviceAxis));
     modeButtons.forEach(b =>
         b.classList.toggle('active', b.dataset.mode === deviceMode));
+    unitsButtons.forEach(b =>
+        b.classList.toggle('active', b.dataset.units === deviceUnits));
     xformFlipXBtn.classList.toggle('active', deviceXform.flipX);
     xformFlipYBtn.classList.toggle('active', deviceXform.flipY);
     xformRotateBtn.classList.toggle('active', deviceXform.rotate !== 0);
@@ -384,12 +411,15 @@ const fmtVal   = v => v.toFixed(2);
 
 // Push caliber preset × debug multipliers into the solver. Called on caliber
 // change and on any multiplier slider targeting solver config. Slider
-// default 1.0× = preset unchanged.
+// default 1.0× = preset unchanged. Feature toggles zero out their respective
+// multipliers so an off feature produces no effect even if the slider is up.
 function pushSolverMultipliers() {
     const preset = CALIBER_PRESETS[selectedCaliberId];
     const cfg = window.DEBUG_CONFIG;
-    FluidSim.setConfig('BLOOM_INTENSITY',      preset.BLOOM_INTENSITY * cfg.bloomMult);
-    FluidSim.setConfig('CURL',                 preset.CURL            * cfg.curlMult);
+    const bloom = cfg.bloomEnabled ? cfg.bloomMult : 0;
+    const curl  = cfg.curlEnabled  ? cfg.curlMult  : 0;
+    FluidSim.setConfig('BLOOM_INTENSITY',      preset.BLOOM_INTENSITY * bloom);
+    FluidSim.setConfig('CURL',                 preset.CURL            * curl);
     FluidSim.setConfig('PRESSURE',             preset.PRESSURE);
     FluidSim.setConfig('PRESSURE_ITERATIONS',  preset.PRESSURE_ITERATIONS);
     applyPhaseDissipation();
@@ -419,6 +449,45 @@ debugSplatLosCb.addEventListener('change', () => {
 debugBloomLosCb.addEventListener('change', () => {
     window.DEBUG_CONFIG.bloomLosGuard = debugBloomLosCb.checked;
     FluidSim.setBloomLosGuard(debugBloomLosCb.checked);
+});
+
+// Feature toggles that fully disable a feature (vs. scaling it to zero).
+// Kept separate from the sliders so a user can A/B-test without losing
+// their slider settings.
+function syncFeatureToggleUI() {
+    const cfg = window.DEBUG_CONFIG;
+    const rows = {
+        'debug-bloom':          cfg.bloomEnabled,
+        'debug-bloom-onset':    cfg.bloomEnabled,
+        'debug-bloom-fade':     cfg.bloomEnabled,
+        'debug-curl':           cfg.curlEnabled,
+        'debug-bullet-border':  cfg.bulletBorderEnabled,
+    };
+    for (const id in rows) {
+        const el = document.getElementById(id);
+        if (el && el.parentElement) el.parentElement.classList.toggle('disabled', !rows[id]);
+    }
+}
+
+debugBloomCb.checked = window.DEBUG_CONFIG.bloomEnabled;
+debugCurlCb.checked  = window.DEBUG_CONFIG.curlEnabled;
+debugBulletBorderCb.checked = window.DEBUG_CONFIG.bulletBorderEnabled;
+syncFeatureToggleUI();
+
+debugBloomCb.addEventListener('change', () => {
+    window.DEBUG_CONFIG.bloomEnabled = debugBloomCb.checked;
+    syncFeatureToggleUI();
+    pushSolverMultipliers();
+});
+debugCurlCb.addEventListener('change', () => {
+    window.DEBUG_CONFIG.curlEnabled = debugCurlCb.checked;
+    syncFeatureToggleUI();
+    pushSolverMultipliers();
+});
+debugBulletBorderCb.addEventListener('change', () => {
+    window.DEBUG_CONFIG.bulletBorderEnabled = debugBulletBorderCb.checked;
+    syncFeatureToggleUI();
+    rebuildObstacles();
 });
 
 // Plume / dissipation
@@ -711,7 +780,8 @@ function rebuildObstacles(bullet) {
         1.0,
         Math.round(deviceOffset.x),
         Math.round(deviceOffset.y),
-        bullet || null
+        bullet || null,
+        deviceMask ? (deviceMask.pixelsPerInch || 0) : 0
     );
 
     FluidSim.uploadObstacleTexture(obstacleData, W, H);

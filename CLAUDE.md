@@ -126,8 +126,8 @@ deviceScaleMult?, offsetX?, offsetY?, bullet?)` rasterizes the obstacle map:
 - Bullet silhouette (optional): solid body at value 255 plus an optional
   invisible "skirt" at value 192 (above the 0.5 solid threshold but below
   the 0.9 overlay threshold). The skirt is painted into empty cells only
-  so it can't overwrite barrel walls or the device. Scaled by
-  `DEBUG_CONFIG.bulletBorderMult`.
+  so it can't overwrite barrel walls or the device. Gated by
+  `DEBUG_CONFIG.bulletBorderEnabled` and scaled by `bulletBorderMult`.
 
 Coordinate convention: `data[j * simW + i]`, `j=0` is the bottom row
 (OpenGL UV `v = 0`).
@@ -267,10 +267,26 @@ values decaying under `DENSITY_DISSIPATION` + the bloom threshold; there is
 no second dye buffer.
 
 ### Scheduled bloom
-`bloomOnsetOffsetMs` + `bloomFadeInMs` gate `BLOOM_INTENSITY` along
-sim-time so the glow doesn't show during the in-bore push — the user-visible
-flash belongs to muzzle exit. Between shots (IDLE) bloom is held at full so
-residual smoke still glows.
+`bloomOnsetOffsetMs` + `bloomFadeInMs` gate `BLOOM_INTENSITY` along sim-time
+so the glow doesn't show during the in-bore push — the user-visible flash
+belongs to muzzle exit. Between shots (IDLE) bloom is held at full so
+residual smoke still glows. The whole halo is additionally gated by the
+`bloomEnabled` feature toggle (default **OFF** — the raw plume reads
+clearer without the halo, and a user can opt in from the debug panel).
+
+### Debug panel — feature toggles vs. sliders
+Two knob types in `DEBUG_CONFIG`:
+- **`*Enabled` booleans** — full on/off. When OFF, the feature is bypassed
+  entirely regardless of slider value. Feature toggles:
+  `inboreEnabled`, `smokeEnabled`, `splatLosGuard`, `bloomLosGuard`,
+  `bloomEnabled` (default OFF), `curlEnabled`, `bulletBorderEnabled`.
+- **`*Mult` / magnitude sliders** — scale a preset value; 1.0× = unchanged.
+  Ignored when the matching feature toggle is OFF.
+
+This split lets a user A/B-test a feature without losing their slider
+position. Labels in the debug panel are firearms-first (e.g. "Powder
+charge" for `gasForceMult`, "Bore seal" for `bulletBorderMult`) — the
+tooltip on each row is the canonical explanation.
 
 ## Invariants to preserve
 

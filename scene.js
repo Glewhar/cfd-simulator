@@ -96,15 +96,20 @@ window.Scene = (function () {
      * @param {Uint8Array} [deviceMask]  solidness mask of the muzzle device
      * @param {number}     [deviceW]     deviceMask width  (source pixels)
      * @param {number}     [deviceH]     deviceMask height (source pixels)
-     * @param {number}     [deviceScaleMult] multiplier on the bore-proportional
-     *        fit-to-box scale. 1.0 (default) = baseline. Clamped to canvas.
+     * @param {number}     [deviceScaleMult] multiplier on the base device scale.
+     *        1.0 (default) = baseline. Clamped to canvas.
      * @param {number}     [offsetX] drag offset in sim pixels (+right)
      * @param {number}     [offsetY] drag offset in sim pixels (+up)
      * @param {{xUV:number, yUV:number}} [bullet] bullet center position
+     * @param {number}     [devicePixelsPerInch] if > 0, the mesh is placed at
+     *        its REAL size using this factor + `geom.texelsPerInch` — so a 6"
+     *        suppressor on a 16" barrel draws at 6/16 of the barrel length.
+     *        Falls back to bore-proportional fit-to-box when 0/absent.
      * @returns {Uint8Array} obstacle map (255 = solid, 0 = fluid)
      */
     function buildObstacleTexture(geom, deviceMask, deviceW, deviceH,
-                                  deviceScaleMult, offsetX, offsetY, bullet) {
+                                  deviceScaleMult, offsetX, offsetY, bullet,
+                                  devicePixelsPerInch) {
         const { simWidth, simHeight, barrelTexels, boreCenterJ, boreHalfH,
                 bulletLenTexels } = geom;
         const data = new Uint8Array(simWidth * simHeight);
@@ -124,8 +129,16 @@ window.Scene = (function () {
         // mark dest solid when ≥50% of its source box is solid.
         if (deviceMask && deviceW > 0 && deviceH > 0) {
             const unitMult  = (deviceScaleMult > 0) ? deviceScaleMult : 1.0;
-            const baseScale = Math.min(geom.deviceMaxW / deviceW,
-                                       geom.deviceTargetH / deviceH);
+            // Real-units path: scale the mask so one mask-pixel represents the
+            // same real-world inch count the barrel uses. Fit-to-box path
+            // (when pixelsPerInch is unknown): bore-proportional sizing.
+            let baseScale;
+            if (devicePixelsPerInch > 0 && geom.texelsPerInch > 0) {
+                baseScale = geom.texelsPerInch / devicePixelsPerInch;
+            } else {
+                baseScale = Math.min(geom.deviceMaxW / deviceW,
+                                     geom.deviceTargetH / deviceH);
+            }
             const canvasCap = Math.min(
                 (simWidth  - barrelTexels - 2) / deviceW,
                 (simHeight - 4)                / deviceH,
@@ -191,8 +204,15 @@ window.Scene = (function () {
             const SKIRT_VERT_PX  = 500;
             const SKIRT_BACK_PX  = 10;
 
-            const skirtMult = Math.max(0,
-                (window.DEBUG_CONFIG && window.DEBUG_CONFIG.bulletBorderMult) || 0);
+            // The bore seal (invisible skirt around the bullet) is disabled
+            // either by unchecking the "Bore seal" feature toggle or by setting
+            // its slider to 0. Either way, gas will be able to slip around the
+            // bullet while it travels down the barrel.
+            const cfg = window.DEBUG_CONFIG || {};
+            const skirtEnabled = cfg.bulletBorderEnabled !== false;
+            const skirtMult = skirtEnabled
+                ? Math.max(0, cfg.bulletBorderMult || 0)
+                : 0;
             const padFront = Math.round(SKIRT_FRONT_PX * skirtMult);
             const padVert  = Math.round(SKIRT_VERT_PX  * skirtMult);
             const padBack  = Math.round(SKIRT_BACK_PX  * skirtMult);

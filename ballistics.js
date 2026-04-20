@@ -12,43 +12,81 @@ window.BALLISTIC_TIME = {
 // Read by FireSequencer.update() every tick AND by main.js when pushing solver
 // config. main.js mutates these in place when the user drags sliders. *Mult
 // values multiply per-caliber preset values; 1.0 = preset unchanged.
+//
+// Each *Enabled boolean is an on/off feature toggle. When false, that feature
+// is fully disabled (not just scaled to zero) regardless of its slider value —
+// this lets a user A/B test a feature without losing their slider setting.
 window.DEBUG_CONFIG = {
-    // Phase gates
+    // ─── Feature toggles (on/off) ──────────────────────────────────────
+    // Gas pushed behind the bullet while it's still inside the barrel.
+    // OFF = fire a bullet with no propellant gas injection at all.
     inboreEnabled:       true,
+    // Slow trailing smoke that keeps puffing out after the bullet exits.
+    // OFF = cloud cuts off at muzzle exit.
     smokeEnabled:        true,
+    // Solid walls (barrel, suppressor baffles, brake ports) block gas
+    // from leaking through them. OFF = gas can teleport through thin walls.
     splatLosGuard:       true,
+    // Solid walls block the muzzle-flash glow from bleeding through steel.
+    // OFF = glow passes through solid bodies.
     bloomLosGuard:       true,
+    // Halo glow on the hot gas (camera bloom effect). OFF = raw color only,
+    // no halo.
+    bloomEnabled:        true,
+    // Swirl/vorticity confinement — makes gas curl and form eddies.
+    // OFF = smoother, more laminar plume with no smoke rings.
+    curlEnabled:         true,
+    // Invisible solid collar around the bullet modelling obturation
+    // (how the bullet seals the bore so gas can't leak past). OFF = gas
+    // can slip around the bullet while it's travelling down the barrel.
+    bulletBorderEnabled: true,
 
-    // Plume / dissipation (the "explosion reach" knobs)
-    gasForceMult:        5.0,   // scales gas injection force (primary "stronger gas" knob)
-    gasSpeedRatio:       0.1,   // target gas velocity as fraction of bullet velocity
-    // Dissipation is phase-swapped live: the in-bore multiplier while the
-    // bullet is still in the barrel, the bloom multiplier for the
-    // post-muzzle-exit vent + settling smoke + IDLE.
+    // ─── Powder charge & plume shape ───────────────────────────────────
+    // How hard the propellant shoves gas behind the bullet. Think powder-
+    // charge strength. Higher = bigger, farther-reaching flash.
+    gasForceMult:        5.0,
+    // Target gas speed as a fraction of bullet speed. 0.1 = gas lags far
+    // behind (realistic pressure buildup). >1.0 lets gas race ahead of
+    // the bullet (unphysical but good for stylising the plume).
+    gasSpeedRatio:       0.1,
+
+    // ─── Motion & smoke fade (phase-swapped live) ──────────────────────
+    // How fast gas slows down (velocity) and fades from view (density).
+    // "In barrel" values apply while the bullet is still in the bore; "after
+    // exit" values apply from muzzle exit onward AND during IDLE between
+    // shots, so lingering smoke decays under the same knob that shaped it.
+    // Higher = faster fade.
     velocityDissInboreMult: 0.5,
     velocityDissBloomMult:  0.5,
     densityDissInboreMult:  0.25,
     densityDissBloomMult:   0.9,
-    bloomMult:           0.2,   // × preset BLOOM_INTENSITY
-    curlMult:            1.0,   // × preset CURL (vorticity / eddies)
 
-    // Bloom is silenced during the in-bore push so the user-visible flash
-    // belongs to muzzle exit, not the initial bore push. Between shots
-    // (IDLE) bloom is held at full so settling smoke still glows.
-    bloomOnsetOffsetMs:  0.0,   // sim-ms relative to muzzle exit
-    bloomFadeInMs:       0.25,  // linear ramp 0 → full over this window
+    // ─── Glow (only active when bloomEnabled) ──────────────────────────
+    bloomMult:           0.6,   // halo brightness × caliber preset
+    curlMult:            1.0,   // turbulence / eddy strength × caliber preset
 
-    // Settling smoke (afterburner) — emitted for `smokeDurationMs` after the
-    // bullet clears the muzzle. The muzzle flash is produced by the fluid
-    // solver venting accumulated in-bore gas; there's no scripted "exit blast".
-    smokeDurationMs:     1.0,
-    smokeRateHz:         8.3,
-    smokeForceMult:      5.0,
-    smokeRadiusMult:     8.0,
+    // Glow is silenced during the in-bore push so the visible flash reads
+    // as muzzle exit, not initial bore push.
+    // Delay = when glow is allowed to turn on, relative to the moment the
+    //         bullet tail clears the muzzle. 0 = exactly at exit. Negative
+    //         = earlier. Positive = later.
+    // Ramp  = how slowly glow swells from 0 → full. 0 = instant pop.
+    bloomOnsetOffsetMs:  0.0,
+    bloomFadeInMs:       0.05,
 
-    // Invisible solid skirt painted around the bullet to seal the bore
-    // against gas squeezing past. Physics treats it as solid; the overlay
-    // draws only the real bullet.
+    // ─── Trailing smoke (afterburner) ──────────────────────────────────
+    // Slow smoke puffs emitted for `smokeDurationMs` after the bullet
+    // clears the muzzle. The initial muzzle flash itself is produced by
+    // the solver venting accumulated in-bore gas — there's no scripted
+    // "exit blast".
+    smokeDurationMs:     1.0,   // sim-ms the trail keeps puffing
+    smokeRateHz:         8.3,   // puffs per simulated millisecond
+    smokeForceMult:      5.0,   // how hard each puff is pushed forward
+    smokeRadiusMult:     8.0,   // size of each puff cloud
+
+    // ─── Bore seal (bullet border) ─────────────────────────────────────
+    // Scales the invisible solid skirt around the bullet. Physics treats
+    // the skirt as solid; the overlay draws only the real bullet.
     bulletBorderMult:    1.0,
 };
 

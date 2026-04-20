@@ -113,6 +113,20 @@ html, body {
   color: var(--text-dim);
 }
 
+/* When a feature toggle (inline checkbox) is OFF, dim the slider + label
+   + value so it's visually clear the slider is inert. The checkbox itself
+   stays full-opacity so the user can still toggle it back on. */
+.debug-slider-row.disabled .debug-slider,
+.debug-slider-row.disabled .debug-slider-label,
+.debug-slider-row.disabled .debug-slider-val { opacity: 0.35; }
+
+.debug-feature-toggle {
+  flex: 0 0 auto;
+  accent-color: var(--accent);
+  cursor: pointer;
+  margin: 0;
+}
+
 .debug-slider-label {
   flex: 0 0 auto;
 }

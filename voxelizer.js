@@ -342,16 +342,32 @@ window.Voxelizer = (function () {
         if (!vertices.length || !faces.length) {
             throw new Error('Empty mesh (no vertices / faces parsed)');
         }
-        const mode = (opts && opts.mode) || 'section';
+        const mode  = (opts && opts.mode)  || 'section';
+        const units = (opts && opts.units) || 'mm';
+        // Mesh vertex values are interpreted as this many units per inch.
+        const unitsPerInch = (units === 'inch') ? 1 : 25.4;
+
         const raw = (mode === 'silhouette')
             ? rasterizeSilhouette(vertices, faces, axis, resolution, resolution)
             : rasterizeSection   (vertices, faces, axis, resolution, resolution);
         const xformed = transformMask(raw.data, raw.width, raw.height, opts);
         let solid = 0;
         for (let i = 0; i < xformed.data.length; i++) if (xformed.data[i]) solid++;
+
+        // Real-world calibration: `fitMapping` scales native-units → mask-pixels
+        // uniformly on both axes, so a single scalar suffices. Convert to
+        // mask-pixels-per-inch so consumers can translate the mask into the
+        // scene at the mesh's true physical size.
+        const [, uIdx, vIdx] = axisIndices(axis);
+        const b = computeBounds(vertices);
+        const { scale } = fitMapping(b, uIdx, vIdx, resolution, resolution, 0.04);
+        const pixelsPerInch = scale * unitsPerInch;
+
         xformed.solidPixels   = solid;
         xformed.totalPixels   = xformed.data.length;
         xformed.triangleCount = faces.length;
+        xformed.pixelsPerInch = pixelsPerInch;
+        xformed.units         = units;
         return xformed;
     }
 
