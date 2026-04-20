@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ballistic Gas Simulator</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<canvas id="sim-canvas"></canvas>
+<canvas id="debug-overlay"></canvas>
+<canvas id="playback-overlay"></canvas>
+
+<!-- ── HUD ──────────────────────────────────────────────────────────────── -->
+<div id="hud">
+
+  <!-- Caliber selector -->
+  <div id="caliber-panel">
+    <div class="panel-label collapsible" data-toggle="collapse">
+      <span>CALIBER</span><span class="chevron">▾</span>
+    </div>
+    <div class="panel-body">
+      <div id="caliber-buttons">
+        <button class="cal-btn active" data-cal="cal_223">.223 Rem</button>
+        <button class="cal-btn"        data-cal="cal_308">.308 Win</button>
+        <button class="cal-btn"        data-cal="cal_300blk_super">300 BLK ⚡</button>
+        <button class="cal-btn"        data-cal="cal_300blk_sub">300 BLK 🔇</button>
+        <button class="cal-btn"        data-cal="cal_9mm">9mm</button>
+      </div>
+      <div id="cal-desc" class="small-text">55k PSI · 3,000 fps · .224" bore</div>
+    </div>
+  </div>
+
+  <!-- Muzzle device (sample selector + custom upload + orient) -->
+  <div id="device-panel">
+    <div class="panel-label collapsible" data-toggle="collapse">
+      <span>MUZZLE DEVICE</span><span class="chevron">▾</span>
+    </div>
+    <div class="panel-body">
+      <!-- Built-in STL samples -->
+      <div id="device-buttons">
+        <button class="device-btn active" data-device="none">No device (bare muzzle)</button>
+        <button class="device-btn"        data-device="suppressor">Suppressor (sample)</button>
+        <button class="device-btn"        data-device="muzzle_brake">Muzzle brake (sample)</button>
+      </div>
+
+      <!-- Upload a custom mesh (CORS-safe: FileReader, no network) -->
+      <input type="file" id="device-file" accept=".stl,.obj" style="display:none">
+      <button id="device-upload-btn" class="device-btn">Upload .stl / .obj…</button>
+
+      <!-- Projection axis -->
+      <div class="device-opt-row">
+        <span class="device-opt-label">Axis</span>
+        <button class="opt-btn active" data-axis="y">Y (top)</button>
+        <button class="opt-btn"        data-axis="x">X (side)</button>
+        <button class="opt-btn"        data-axis="z">Z (front)</button>
+      </div>
+
+      <!-- Projection mode -->
+      <div class="device-opt-row">
+        <span class="device-opt-label">Mode</span>
+        <button class="opt-btn active" data-mode="section">Section</button>
+        <button class="opt-btn"        data-mode="silhouette">Silhouette</button>
+      </div>
+
+      <!-- Flip + rotate (re-voxelize in place) -->
+      <div class="device-opt-row">
+        <span class="device-opt-label">Orient</span>
+        <button class="opt-btn" id="xform-flipx">Flip X</button>
+        <button class="opt-btn" id="xform-flipy">Flip Y</button>
+        <button class="opt-btn" id="xform-rotate">Rotate 90°</button>
+      </div>
+
+      <div id="device-status" class="small-text">Bare muzzle</div>
+      <canvas id="device-preview" width="128" height="128" style="display:none"></canvas>
+    </div>
+  </div>
+
+  <!-- Fire button -->
+  <div id="fire-panel">
+    <button id="fire-btn" title="Space">FIRE</button>
+    <div class="small-text key-hint">or press <kbd>Space</kbd></div>
+    <label class="debug-toggle">
+      <input type="checkbox" id="debug-checkbox">
+      <span>Debug phases</span>
+    </label>
+    <div id="debug-options">
+
+      <!-- ── Phase toggles ─────────────────────────────────────────── -->
+      <div class="debug-group">
+        <div class="debug-group-label collapsible" data-toggle="collapse">
+          <span>PHASES</span><span class="chevron">▾</span>
+        </div>
+        <div class="debug-group-body">
+          <label class="debug-toggle">
+            <input type="checkbox" id="debug-inbore-enabled" checked>
+            <span>Muzzle flash</span>
+          </label>
+          <label class="debug-toggle">
+            <input type="checkbox" id="debug-smoke-enabled" checked>
+            <span>Settling smoke</span>
+          </label>
+          <label class="debug-toggle" title="Line-of-sight test in the splat shader. ON = Gaussian respects walls. OFF = legacy leaky behavior, for A/B comparison.">
+            <input type="checkbox" id="debug-splat-los" checked>
+            <span>Splat boundary</span>
+          </label>
+          <label class="debug-toggle" title="Line-of-sight test in the display shader's bloom composite. ON = bloom glow respects walls (no cross-wall bleed from the multi-res blur). OFF = legacy leaky bloom, for A/B comparison.">
+            <input type="checkbox" id="debug-bloom-los" checked>
+            <span>Bloom boundary</span>
+          </label>
+        </div>
+      </div>
+
+      <!-- ── Plume / dissipation (explosion reach) ────────────────── -->
+      <div class="debug-group">
+        <div class="debug-group-label collapsible" data-toggle="collapse">
+          <span>PLUME / DISSIPATION</span><span class="chevron">▾</span>
+        </div>
+        <div class="debug-group-body">
+          <div class="debug-slider-row" title="Primary 'stronger gas' knob. Multiplies the raw force injected into the velocity field for in-bore push and smoke. Caliber differences are preserved.">
+            <span class="debug-slider-label">Gas force</span>
+            <input type="range" class="debug-slider" id="debug-gas-force" min="0.1" max="10" step="0.05" value="5">
+            <span class="debug-slider-val" id="debug-gas-force-val">5.00×</span>
+          </div>
+          <div class="debug-slider-row" title="Target gas effective velocity as a fraction of bullet velocity. >1.0 lets gas overtake the bullet (unphysical).">
+            <span class="debug-slider-label">Gas speed ratio</span>
+            <input type="range" class="debug-slider" id="debug-gas-ratio" min="0.1" max="10.0" step="0.05" value="0.1">
+            <span class="debug-slider-val" id="debug-gas-ratio-val">0.10</span>
+          </div>
+          <div class="debug-slider-row" title="× preset VELOCITY_DISSIPATION during the in-bore gas push (while the bullet is still in the barrel). Higher = in-bore jet bleeds off faster.">
+            <span class="debug-slider-label">Vel. diss. (in-bore)</span>
+            <input type="range" class="debug-slider" id="debug-vel-diss-inbore" min="0.1" max="3" step="0.05" value="0.5">
+            <span class="debug-slider-val" id="debug-vel-diss-inbore-val">0.50×</span>
+          </div>
+          <div class="debug-slider-row" title="× preset VELOCITY_DISSIPATION for the bloom phase — post-muzzle-exit vent, settling smoke, and between-shot idle. Higher = bloom plume bleeds off faster.">
+            <span class="debug-slider-label">Vel. diss. (bloom)</span>
+            <input type="range" class="debug-slider" id="debug-vel-diss-bloom" min="0.1" max="3" step="0.05" value="0.5">
+            <span class="debug-slider-val" id="debug-vel-diss-bloom-val">0.50×</span>
+          </div>
+          <div class="debug-slider-row" title="× preset DENSITY_DISSIPATION during the in-bore gas push. Higher = in-bore dye fades faster.">
+            <span class="debug-slider-label">Den. diss. (in-bore)</span>
+            <input type="range" class="debug-slider" id="debug-den-diss-inbore" min="0.1" max="3" step="0.05" value="0.25">
+            <span class="debug-slider-val" id="debug-den-diss-inbore-val">0.25×</span>
+          </div>
+          <div class="debug-slider-row" title="× preset DENSITY_DISSIPATION for the bloom phase — post-muzzle-exit vent, settling smoke, and between-shot idle. Higher = bloom dye/smoke fades faster.">
+            <span class="debug-slider-label">Den. diss. (bloom)</span>
+            <input type="range" class="debug-slider" id="debug-den-diss-bloom" min="0.1" max="3" step="0.05" value="0.9">
+            <span class="debug-slider-val" id="debug-den-diss-bloom-val">0.90×</span>
+          </div>
+          <div class="debug-slider-row" title="× preset BLOOM_INTENSITY. Brightens/dims the visible glow of hot gas.">
+            <span class="debug-slider-label">Bloom</span>
+            <input type="range" class="debug-slider" id="debug-bloom" min="0" max="3" step="0.05" value="0.2">
+            <span class="debug-slider-val" id="debug-bloom-val">0.20×</span>
+          </div>
+          <div class="debug-slider-row" title="Sim-ms offset from muzzle exit when bloom starts. 0 = exactly at bullet exit. Negative = earlier; positive = later.">
+            <span class="debug-slider-label">Bloom onset</span>
+            <input type="range" class="debug-slider" id="debug-bloom-onset" min="-5" max="10" step="0.05" value="0">
+            <span class="debug-slider-val" id="debug-bloom-onset-val">+0.00 ms</span>
+          </div>
+          <div class="debug-slider-row" title="Sim-ms over which bloom ramps 0 → full after onset. 0 = hard switch.">
+            <span class="debug-slider-label">Bloom fade-in</span>
+            <input type="range" class="debug-slider" id="debug-bloom-fade" min="0" max="3" step="0.05" value="0.25">
+            <span class="debug-slider-val" id="debug-bloom-fade-val">0.25 ms</span>
+          </div>
+          <div class="debug-slider-row" title="× preset CURL (vorticity confinement). Higher = more eddies, more swirl persistence.">
+            <span class="debug-slider-label">Curl</span>
+            <input type="range" class="debug-slider" id="debug-curl" min="0" max="3" step="0.05" value="1">
+            <span class="debug-slider-val" id="debug-curl-val">1.00×</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── Settling smoke (afterburner) ─────────────────────────── -->
+      <div class="debug-group">
+        <div class="debug-group-label collapsible" data-toggle="collapse">
+          <span>AFTERBURNER / SMOKE</span><span class="chevron">▾</span>
+        </div>
+        <div class="debug-group-body">
+          <div class="debug-slider-row" title="Simulated milliseconds after muzzle exit that smoke continues to emit. 0 disables. Also governs end of sequence.">
+            <span class="debug-slider-label">Duration</span>
+            <input type="range" class="debug-slider" id="debug-smoke-duration" min="0" max="10" step="0.1" value="1">
+            <span class="debug-slider-val" id="debug-smoke-duration-val">1.0 ms</span>
+          </div>
+          <div class="debug-slider-row" title="Emissions per simulated millisecond. Higher = denser smoke stream.">
+            <span class="debug-slider-label">Rate</span>
+            <input type="range" class="debug-slider" id="debug-smoke-rate" min="1" max="50" step="0.5" value="8.3">
+            <span class="debug-slider-val" id="debug-smoke-rate-val">8.3 Hz</span>
+          </div>
+          <div class="debug-slider-row" title="Smoke push force (× 5% of in-bore gas force). Higher = smoke jets farther; lower = it drifts.">
+            <span class="debug-slider-label">Force</span>
+            <input type="range" class="debug-slider" id="debug-smoke-force" min="0" max="5" step="0.05" value="5">
+            <span class="debug-slider-val" id="debug-smoke-force-val">5.00×</span>
+          </div>
+          <div class="debug-slider-row" title="Smoke splat Gaussian radius (× SPLAT_RADIUS). Bigger = puffier smoke clouds.">
+            <span class="debug-slider-label">Radius</span>
+            <input type="range" class="debug-slider" id="debug-smoke-radius" min="0.3" max="20" step="0.1" value="8">
+            <span class="debug-slider-val" id="debug-smoke-radius-val">8.0×</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── Bullet invisible border ───────────────────────────────── -->
+      <div class="debug-group">
+        <div class="debug-group-label collapsible" data-toggle="collapse">
+          <span>BULLET BORDER</span><span class="chevron">▾</span>
+        </div>
+        <div class="debug-group-body">
+          <div class="debug-slider-row" title="Scales the invisible solid skirt around the bullet. Base = 500 px front, 500 px top/bottom, 10 px back. 0 = off. Physics treats the skirt as solid; overlay draws only the real bullet.">
+            <span class="debug-slider-label">Border mult</span>
+            <input type="range" class="debug-slider" id="debug-bullet-border" min="0" max="5" step="0.05" value="1">
+            <span class="debug-slider-val" id="debug-bullet-border-val">1.00×</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Playback slider (visible only when paused) -->
+  <div id="playback-panel">
+    <input type="range" id="playback-slider" min="0" max="100" value="100" step="1">
+    <div id="playback-time">0.000 / 0.000 ms</div>
+  </div>
+
+</div>
+
+<!-- Status bar -->
+<div id="status-bar">
+  <span id="status-text">Ready · Space to fire</span>
+</div>
+
+<!-- Scripts (order matters) -->
+<script src="fluid-core.js"></script>
+<script src="ballistics.js"></script>
+<script src="voxelizer.js"></script>
+<script src="scene.js"></script>
+<script src="main.js"></script>
+</body>
+</html>

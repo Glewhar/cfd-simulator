@@ -1,0 +1,566 @@
+/* ── Reset & base ─────────────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg:       #09090b;
+  --surface:  #18181b;
+  --border:   #27272a;
+  --muted:    #52525b;
+  --text:     #e4e4e7;
+  --text-dim: #a1a1aa;
+  --accent:   #f97316;   /* fire orange */
+  --accent-h: #fb923c;
+  --danger:   #dc2626;
+  --danger-h: #ef4444;
+  --radius:   6px;
+  --font:     'SF Mono', 'Fira Code', 'Consolas', monospace;
+}
+
+html, body {
+  width: 100%; height: 100%;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 12px;
+}
+
+/* ── Simulation canvas ───────────────────────────────────────────────────── */
+#sim-canvas {
+  position: fixed;
+  top: 0; left: 0;
+  width: 100vw;
+  height: 100vh;
+  display: block;
+  background: #000;
+  cursor: default;
+}
+
+#sim-canvas.device-loaded { cursor: grab; }
+#sim-canvas.device-dragging { cursor: grabbing; }
+
+/* ── Playback overlay (drawn over sim canvas when paused / scrubbing) ───── */
+#playback-overlay {
+  position: fixed;
+  top: 0; left: 0;
+  width: 100vw;
+  height: 100vh;
+  display: none;
+  pointer-events: none;
+  z-index: 5;
+}
+
+/* ── Debug overlay (phase-position markers, drawn over sim canvas) ──────── */
+#debug-overlay {
+  position: fixed;
+  top: 0; left: 0;
+  width: 100vw;
+  height: 100vh;
+  display: none;
+  pointer-events: none;
+  z-index: 4;
+}
+
+.debug-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  font-size: 10px;
+  color: var(--text-dim);
+  cursor: pointer;
+  user-select: none;
+}
+
+.debug-toggle input { accent-color: var(--accent); cursor: pointer; }
+
+#debug-options {
+  display: none;
+  flex-direction: column;
+  gap: 3px;
+  margin-top: 6px;
+  padding: 6px 8px;
+  border-left: 2px solid var(--border);
+  max-height: 60vh;
+  overflow-y: auto;
+  min-width: 260px;
+}
+
+#debug-options.visible { display: flex; }
+
+#debug-options::-webkit-scrollbar { width: 6px; }
+#debug-options::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+#debug-options::-webkit-scrollbar-thumb:hover { background: var(--muted); }
+
+.debug-group-label {
+  font-size: 9px;
+  letter-spacing: 0.14em;
+  color: var(--accent);
+  text-transform: uppercase;
+  margin-top: 8px;
+  margin-bottom: 2px;
+  padding-bottom: 2px;
+  border-bottom: 1px solid var(--border);
+}
+.debug-group-label:first-child { margin-top: 0; }
+
+.debug-slider-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 2px;
+  font-size: 10px;
+  color: var(--text-dim);
+}
+
+.debug-slider-label {
+  flex: 0 0 auto;
+}
+
+.debug-slider {
+  flex: 1 1 auto;
+  -webkit-appearance: none;
+  appearance: none;
+  height: 3px;
+  background: var(--border);
+  border-radius: 2px;
+  outline: none;
+  cursor: pointer;
+  min-width: 60px;
+}
+
+.debug-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 11px; height: 11px;
+  background: var(--accent);
+  border-radius: 50%;
+  cursor: grab;
+}
+
+.debug-slider::-moz-range-thumb {
+  width: 11px; height: 11px;
+  background: var(--accent);
+  border: none;
+  border-radius: 50%;
+  cursor: grab;
+}
+
+.debug-slider-val {
+  flex: 0 0 auto;
+  min-width: 28px;
+  text-align: right;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── HUD container ───────────────────────────────────────────────────────── */
+/* Docked to the bottom of the viewport as a horizontal flex row. */
+#hud {
+  position: fixed;
+  left: 0; right: 0; bottom: 0;
+  display: flex;
+  flex-direction: row;
+  align-items: flex-end;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 10px 14px 12px;
+  z-index: 10;
+  pointer-events: none; /* let clicks pass through to canvas by default */
+}
+
+/* ── Panels ──────────────────────────────────────────────────────────────── */
+#caliber-panel,
+#device-panel,
+#fire-panel {
+  pointer-events: all;
+  background: rgba(9, 9, 11, 0.82);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  backdrop-filter: blur(8px);
+  min-width: 200px;
+  flex: 0 0 auto;
+}
+
+/* Caliber buttons lay out horizontally now that the HUD is at the bottom */
+#caliber-buttons {
+  flex-direction: row !important;
+  flex-wrap: wrap;
+}
+
+#caliber-buttons .cal-btn {
+  width: auto;
+  padding: 5px 10px;
+}
+
+.panel-label {
+  font-size: 9px;
+  letter-spacing: 0.15em;
+  color: var(--muted);
+  text-transform: uppercase;
+  margin-bottom: 8px;
+}
+
+/* ── Collapsible panels / debug groups ──────────────────────────────────── */
+.panel-label.collapsible,
+.debug-group-label.collapsible {
+  cursor: pointer;
+  user-select: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.panel-label.collapsible:hover,
+.debug-group-label.collapsible:hover {
+  color: var(--text);
+}
+
+.panel-label.collapsible .chevron,
+.debug-group-label.collapsible .chevron {
+  display: inline-block;
+  font-size: 10px;
+  line-height: 1;
+  transition: transform 0.15s ease;
+}
+
+#caliber-panel.collapsed .panel-body,
+#device-panel.collapsed .panel-body,
+.debug-group.collapsed .debug-group-body {
+  display: none;
+}
+
+#caliber-panel.collapsed .panel-label .chevron,
+#device-panel.collapsed .panel-label .chevron,
+.debug-group.collapsed .debug-group-label .chevron {
+  transform: rotate(-90deg);
+}
+
+#caliber-panel.collapsed,
+#device-panel.collapsed {
+  min-width: 0;
+  padding: 8px 12px;
+}
+
+#caliber-panel.collapsed .panel-label,
+#device-panel.collapsed .panel-label {
+  margin-bottom: 0;
+}
+
+/* ── Caliber buttons ─────────────────────────────────────────────────────── */
+#caliber-buttons {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.cal-btn {
+  width: 100%;
+  text-align: left;
+  padding: 6px 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-dim);
+  font-family: var(--font);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.cal-btn:hover {
+  background: #27272a;
+  color: var(--text);
+  border-color: var(--muted);
+}
+
+.cal-btn.active {
+  background: rgba(249, 115, 22, 0.15);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* ── Muzzle device panel ─────────────────────────────────────────────────── */
+#device-buttons {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.device-btn {
+  width: 100%;
+  text-align: left;
+  padding: 6px 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-dim);
+  font-family: var(--font);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.device-btn:hover {
+  background: #27272a;
+  color: var(--text);
+  border-color: var(--muted);
+}
+
+.device-btn.active {
+  background: rgba(249, 115, 22, 0.15);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+#device-preview {
+  display: block;
+  width: 100%;
+  height: auto;
+  margin-top: 8px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  image-rendering: pixelated;
+}
+
+/* Upload button (styled like .device-btn but full-width with a dashed border) */
+#device-upload-btn {
+  width: 100%;
+  margin-top: 6px;
+  padding: 6px 10px;
+  background: transparent;
+  border: 1px dashed var(--muted);
+  border-radius: var(--radius);
+  color: var(--text-dim);
+  font-family: var(--font);
+  font-size: 11px;
+  text-align: center;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+#device-upload-btn:hover {
+  background: #27272a;
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+/* Row of small option buttons (axis / mode / orient) */
+.device-opt-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 6px;
+  flex-wrap: wrap;
+}
+
+.device-opt-label {
+  flex: 0 0 auto;
+  min-width: 42px;
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  color: var(--muted);
+  text-transform: uppercase;
+}
+
+.opt-btn {
+  flex: 1 1 auto;
+  padding: 4px 8px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-dim);
+  font-family: var(--font);
+  font-size: 10px;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+
+.opt-btn:hover {
+  background: #27272a;
+  color: var(--text);
+  border-color: var(--muted);
+}
+
+.opt-btn.active {
+  background: rgba(249, 115, 22, 0.15);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* ── Fire button ─────────────────────────────────────────────────────────── */
+#fire-panel {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+
+#fire-btn {
+  width: 100%;
+  padding: 14px 0;
+  background: linear-gradient(180deg, #dc2626, #991b1b);
+  border: 1px solid #ef4444;
+  border-radius: var(--radius);
+  color: #fef2f2;
+  font-family: var(--font);
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  cursor: pointer;
+  transition: filter 0.1s, transform 0.1s, box-shadow 0.1s;
+  box-shadow: 0 0 12px rgba(239, 68, 68, 0.3);
+}
+
+#fire-btn:hover {
+  filter: brightness(1.15);
+  box-shadow: 0 0 22px rgba(239, 68, 68, 0.55);
+}
+
+#fire-btn:active {
+  transform: scale(0.97);
+  filter: brightness(0.9);
+}
+
+#fire-btn.firing {
+  animation: fire-pulse 0.15s ease-in-out;
+}
+
+@keyframes fire-pulse {
+  0%   { box-shadow: 0 0 12px rgba(239,68,68,.3); }
+  50%  { box-shadow: 0 0 50px rgba(251,146,60,.9); }
+  100% { box-shadow: 0 0 12px rgba(239,68,68,.3); }
+}
+
+/* FIRE button variants for playback state */
+#fire-btn.state-pause {
+  background: linear-gradient(180deg, #f59e0b, #b45309);
+  border-color: #fbbf24;
+  color: #fffbeb;
+  box-shadow: 0 0 12px rgba(251, 191, 36, 0.3);
+}
+
+#fire-btn.state-pause:hover {
+  box-shadow: 0 0 22px rgba(251, 191, 36, 0.55);
+}
+
+#fire-btn.state-play {
+  background: linear-gradient(180deg, #16a34a, #166534);
+  border-color: #22c55e;
+  color: #f0fdf4;
+  box-shadow: 0 0 12px rgba(34, 197, 94, 0.3);
+}
+
+#fire-btn.state-play:hover {
+  box-shadow: 0 0 22px rgba(34, 197, 94, 0.55);
+}
+
+/* ── Playback slider (appears when paused) ──────────────────────────────── */
+#playback-panel {
+  pointer-events: all;
+  display: none;
+  flex: 1 1 320px;
+  flex-direction: column;
+  gap: 6px;
+  background: rgba(9, 9, 11, 0.82);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  backdrop-filter: blur(8px);
+  min-width: 260px;
+  max-width: 520px;
+  align-self: stretch;
+}
+
+#playback-panel.visible { display: flex; }
+
+#playback-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 4px;
+  background: var(--border);
+  border-radius: 2px;
+  outline: none;
+  cursor: pointer;
+}
+
+#playback-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  background: var(--accent);
+  border: 1px solid var(--accent-h);
+  border-radius: 50%;
+  cursor: grab;
+}
+
+#playback-slider::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  background: var(--accent);
+  border: 1px solid var(--accent-h);
+  border-radius: 50%;
+  cursor: grab;
+}
+
+#playback-time {
+  font-size: 10px;
+  color: var(--text-dim);
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Shared text ─────────────────────────────────────────────────────────── */
+.small-text {
+  font-size: 10px;
+  color: var(--text-dim);
+  margin-top: 6px;
+  line-height: 1.4;
+}
+
+.key-hint {
+  font-size: 10px;
+  color: var(--muted);
+}
+
+kbd {
+  display: inline-block;
+  padding: 1px 5px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  font-family: var(--font);
+  font-size: 10px;
+  color: var(--text-dim);
+}
+
+/* ── Status bar ──────────────────────────────────────────────────────────── */
+/* Moved to the TOP of the viewport since HUD now docks to bottom. */
+#status-bar {
+  position: fixed;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10;
+  pointer-events: none;
+}
+
+#status-text {
+  display: inline-block;
+  padding: 4px 14px;
+  background: rgba(9, 9, 11, 0.78);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 11px;
+  color: var(--muted);
+  backdrop-filter: blur(6px);
+  letter-spacing: 0.04em;
+  transition: color 0.3s;
+}
+
+#status-text.firing { color: var(--accent); }
