@@ -144,7 +144,8 @@ faithful. Horizontal dimensions (barrel length, bullet length, mesh long
 axis) stay at true `texelsPerInch`.
 
 `Scene.buildObstacleTexture(geom, deviceMask?, deviceW?, deviceH?,
-deviceScaleMult?, offsetX?, offsetY?, bullet?)` rasterizes the obstacle map:
+deviceScaleMult?, offsetX?, offsetY?, bullet?, deviceBBox?)` rasterizes the
+obstacle map and returns `{ data, muzzleClearUV }`:
 
 - Barrel walls: a tube bounded above and below by `barrelOdHalfH` (not
   wall-to-wall) for the first `barrelTexels` columns.
@@ -154,6 +155,11 @@ deviceScaleMult?, offsetX?, offsetY?, bullet?)` rasterizes the obstacle map:
 - Bullet silhouette (optional): solid body at value 255 plus an optional
   invisible "skirt" at value 192. Gated by `DEBUG_CONFIG.bulletBorderEnabled`
   and scaled by `bulletBorderMult`.
+- `muzzleClearUV`: UV x of the rightmost solid pixel in the bullet's lane.
+  Bare muzzle → `geom.barrelEndX`. Device loaded → right edge of the
+  painted device bbox (clamped to `[barrelEndX, 1]`). Consumed by the
+  bloom gate in `main.js` to ignite the flash the frame the bullet's tip
+  crosses the muzzle exit plane — no hand-tuned delay or fade.
 
 Coordinate convention: `data[j * simW + i]`, `j=0` is the bottom row
 (OpenGL UV `v = 0`).
@@ -210,6 +216,19 @@ Per-frame obstacle rebuild for the moving bullet:
   is called from the before-step hook every frame.
 - Exactly one cleanup rebuild runs the frame after the bullet leaves so
   the phantom bullet clears out of the obstacle texture.
+- Each rebuild caches `muzzleClearUV` on `sceneGeometry` (returned by
+  `Scene.buildObstacleTexture`). This is the threshold the bloom gate
+  tests the bullet tip against, so dragging a device also moves the
+  flash-ignition plane on the next frame automatically.
+
+Debug phase markers (shown when "Debug phases" is on):
+- **IGNITION** (cyan) — each in-bore gas-push splat, emitted every frame
+  while the bullet accelerates inside the barrel.
+- **MUZZLE FLASH** (orange) — one-shot marker at the muzzle exit plane
+  the frame the bloom gate transitions 0 → 1 (bullet tip clears the
+  rightmost obstacle in its lane).
+- **EXPANSION** (yellow) — each trailing-smoke puff emitted after the
+  bullet leaves.
 
 Drag-to-move device: `mousedown` on the sim canvas (with a device loaded)
 captures screen px; `mousemove` converts to sim-space pixels (inverting Y)
@@ -266,8 +285,7 @@ All visual tuning lives in `FIRE_MODEL` and its derived values:
 | `TARGET_IN_BORE_SPLATS` | Total in-bore splat count target, held constant across calibers. |
 
 Dissipation is set **once** on caliber change / slider drag — no mid-shot
-phase swap. (The historical in-bore-vs-bloom phase split was removed; it
-was invisible to users and made fast-caliber behavior non-monotonic.)
+phase swap.
 
 ### Color progression
 Shared palette, lerped over simulated time inside `update()`:
@@ -282,11 +300,22 @@ The visible "flash goes out" effect comes from the high-magnitude palette
 values decaying under `DENSITY_DISSIPATION` + the bloom threshold; there is
 no second dye buffer.
 
-### Scheduled bloom
-`bloomOnsetOffsetMs` + `bloomFadeInMs` gate `BLOOM_INTENSITY` along sim-time
-so the glow doesn't show during the in-bore push. Between shots (IDLE)
-bloom is held at full so residual smoke still glows. The whole halo is
-additionally gated by the `bloomEnabled` feature toggle.
+### Geometry-gated bloom
+The flash halo is a binary gate driven by bullet position, not sim-time.
+Each frame the bloom gate in `main.js` checks whether the bullet's tip UV
+has reached `sceneGeometry.muzzleClearUV` — the rightmost solid pixel in
+the bullet's lane, populated by `Scene.buildObstacleTexture`. Bare muzzle →
+`muzzleClearUV === barrelEndX`. Device loaded → it tracks the right edge
+of the painted device mask (and follows drag offsets). The gate ignites
+the single frame the tip crosses that threshold; nothing turns it off
+until IDLE, at which point it holds at full so residual smoke still glows.
+
+The gate is additionally zeroed by the `bloomEnabled` feature toggle.
+
+There are no time-offset or fade-in knobs for the flash — moving the
+trigger would mean lying about when the gas actually reaches open air.
+A 0 → 1 gate transition also emits a one-shot `muzzle_flash` debug marker
+at the muzzle exit when debug mode is on.
 
 ### Debug panel — feature toggles vs. sliders
 - **`*Enabled` booleans** — full on/off (`inboreEnabled`, `smokeEnabled`,
@@ -310,7 +339,12 @@ seal" for `bulletBorderMult`); tooltips are the canonical explanation.
   regardless of dwell time. Compensates for fast calibers having few
   frames in the barrel.
 - **One geometry object.** Never compute barrel texels / bore half-height /
-  bullet length outside `Scene.computeGeometry`.
+  bullet length outside `Scene.computeGeometry`. The muzzle-exit plane
+  (`muzzleClearUV`) is written onto that same geometry object by
+  `Scene.buildObstacleTexture`; the bloom gate reads it there.
+- **Flash fires on geometry, not sim-time.** The bloom gate only compares
+  the bullet tip UV to `muzzleClearUV`. No schedule knobs, no fade — adding
+  one would mean lying about when the bullet actually reaches open air.
 - **Two obstacle buffers, one solver-facing, one visual-facing.** Morph
   ops ("seal this thin wall") go into the solver buffer only.
 - **Pause freezes solver + sequencer + capture.** All three gate on

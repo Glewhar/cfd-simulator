@@ -141,7 +141,13 @@ window.Scene = (function () {
      *        this is unit-agnostic and uses the scene's barrel/bore metrics
      *        as the single physical reference. Falls back to full-mask fit
      *        when absent.
-     * @returns {Uint8Array} obstacle map (255 = solid, 0 = fluid)
+     * @returns {{data: Uint8Array, muzzleClearUV: number}}
+     *        `data` is the obstacle map (255 = solid, 0 = fluid).
+     *        `muzzleClearUV` is the UV x where the bullet first enters open
+     *        air — rightmost solid pixel in the bullet's lane, i.e. the end
+     *        of the barrel when bare, or the end of the painted device mask
+     *        when a device is loaded. Used by the bloom gate to light the
+     *        flash the frame the bullet's tip clears the muzzle.
      */
     function buildObstacleTexture(geom, deviceMask, deviceW, deviceH,
                                   deviceScaleMult, offsetX, offsetY, bullet,
@@ -149,6 +155,7 @@ window.Scene = (function () {
         const { simWidth, simHeight, barrelTexels, boreCenterJ, boreHalfH,
                 barrelOdHalfH, bulletLenTexels } = geom;
         const data = new Uint8Array(simWidth * simHeight);
+        let muzzleClearUV = geom.barrelEndX;
 
         // ── Barrel: a tube bounded by barrelOdHalfH (not wall-to-wall). Above
         //    and below the tube is open fluid space, so uploaded muzzle
@@ -224,6 +231,14 @@ window.Scene = (function () {
             const oy = (offsetY | 0);
             const startI = barrelTexels - bboxShiftI + ox;
             const startJ = boreCenterJ  - bboxHalfJ  + oy;
+
+            // Device exit plane in UV — right edge of the painted bbox. This
+            // is the "bullet touches outside air" threshold when a device is
+            // loaded. Clamped to [barrelEndX, 1] so negative drag can never
+            // pull the gate earlier than the bare-barrel exit.
+            const deviceRightI = startI + scaledW;
+            muzzleClearUV = Math.min(1, Math.max(geom.barrelEndX,
+                                                  deviceRightI / simWidth));
 
             // djNat = scaledH-1-dj handles Y-flip (source row 0 = top of image).
             for (let dj = 0; dj < scaledH; dj++) {
@@ -320,7 +335,7 @@ window.Scene = (function () {
             paintBullet(0, 0, 0, 255, false);
         }
 
-        return data;
+        return { data, muzzleClearUV };
     }
 
     return { computeGeometry, buildObstacleTexture };

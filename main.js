@@ -133,10 +133,6 @@ const debugSplatRadiusRange = document.getElementById('debug-splat-radius');
 const debugSplatRadiusVal   = document.getElementById('debug-splat-radius-val');
 const debugBloomRange      = document.getElementById('debug-bloom');
 const debugBloomVal        = document.getElementById('debug-bloom-val');
-const debugBloomOnsetRange = document.getElementById('debug-bloom-onset');
-const debugBloomOnsetVal   = document.getElementById('debug-bloom-onset-val');
-const debugBloomFadeRange  = document.getElementById('debug-bloom-fade');
-const debugBloomFadeVal    = document.getElementById('debug-bloom-fade-val');
 const debugCurlRange       = document.getElementById('debug-curl');
 const debugCurlVal         = document.getElementById('debug-curl-val');
 const debugSmokeDurationRange = document.getElementById('debug-smoke-duration');
@@ -156,8 +152,14 @@ let debugMode = false;
 const debugMarkers = [];
 const DEBUG_MARKER_LIFE_MS = 450;
 const DEBUG_PHASE_STYLE = {
-    inbore: { color: '#22d3ee', label: 'MUZZLE FLASH' },
-    smoke:  { color: '#facc15', label: 'SMOKE'   },
+    // In-bore gas push: propellant igniting behind the bullet while it's
+    // still inside the barrel.
+    inbore:       { color: '#22d3ee', label: 'IGNITION'     },
+    // Trailing smoke puffs emitted after the bullet leaves the muzzle.
+    smoke:        { color: '#facc15', label: 'EXPANSION'    },
+    // One-shot event: the frame the bullet's tip first reaches open air
+    // and the flash halo ignites at the muzzle exit.
+    muzzle_flash: { color: '#f97316', label: 'MUZZLE FLASH' },
 };
 
 // ─── Collapsible panels / debug groups ───────────────────────────────────────
@@ -180,6 +182,11 @@ for (let i = 0; i < REPLAY_MAX_FRAMES; i++) {
 
 let lastRebuildHadBullet = false;
 
+// Prior-frame bloom gate, used to fire a single MUZZLE FLASH debug marker
+// on the 0 → 1 transition (the frame the bullet tip clears the muzzle).
+// Initialised to 1 so IDLE → first-shot transition (1 → 0) primes correctly.
+let lastBloomGate = 1;
+
 FluidSim.setBeforeStepCallback(function (dt) {
     // PAUSE freezes solver + sequencer + capture in lock-step.
     if (playbackState !== 'playing') return;
@@ -187,24 +194,37 @@ FluidSim.setBeforeStepCallback(function (dt) {
     const splats = fireSequencer.update(dt);
     const nowMs = performance.now();
 
-    // Gate the flash glow along sim-time so it doesn't show during the in-bore
-    // push — the user-visible glow belongs to muzzle exit, not the initial
-    // bore push. During FIRING: 0 until simMs ≥ muzzleExitMs + bloomOnsetOffsetMs,
-    // then ramps linearly over bloomFadeInMs. Between shots (IDLE): full.
-    // If the Flash-glow feature toggle is off, gate is forced to 0 — no halo.
+    // Flash glow lights up the single frame the bullet's tip first reaches
+    // open air — past the barrel end, or past the device's exit plane if a
+    // suppressor / brake is loaded. `muzzleClearUV` is the rightmost solid
+    // pixel in the bullet's lane, computed by the scene painter, so the
+    // gate tracks whatever obstacle is actually in front of the bullet.
+    // Between shots (IDLE): full, so residual smoke still glows.
     {
         const preset = CALIBER_PRESETS[selectedCaliberId];
         const derived = deriveCaliberVisuals(preset);
         const cfg = window.DEBUG_CONFIG;
         let gate = 1.0;
+        let flashMarker = null;
         if (!cfg.bloomEnabled) {
             gate = 0;
         } else if (fireSequencer.isActive) {
-            const tOn = fireSequencer.muzzleExitMs + cfg.bloomOnsetOffsetMs;
-            const dT = fireSequencer.simMs - tOn;
-            if (dT < 0) gate = 0;
-            else if (cfg.bloomFadeInMs > 0) gate = Math.min(1, dT / cfg.bloomFadeInMs);
+            const bullet = fireSequencer.getBullet();
+            const clearX = (sceneGeometry && sceneGeometry.muzzleClearUV != null)
+                ? sceneGeometry.muzzleClearUV
+                : (sceneGeometry ? sceneGeometry.barrelEndX : 0);
+            const bulletLenUV = sceneGeometry ? sceneGeometry.bulletLengthUV : 0;
+            const tipUV = bullet ? bullet.xUV + bulletLenUV / 2 : 0;
+            gate = (bullet && tipUV >= clearX) ? 1 : 0;
+            // Single-frame 0 → 1 transition = MUZZLE FLASH ignition.
+            // Marker is placed at the muzzle-exit plane, not the bullet's
+            // current position, because the flash visually anchors there.
+            if (debugMode && gate > 0 && lastBloomGate === 0 && bullet) {
+                flashMarker = { x: clearX, y: bullet.yUV, phase: 'muzzle_flash', tEmitted: nowMs };
+            }
         }
+        lastBloomGate = gate;
+        if (flashMarker) debugMarkers.push(flashMarker);
         FluidSim.setConfig('BLOOM_INTENSITY', derived.BLOOM_INTENSITY * cfg.bloomMult * gate);
     }
 
@@ -549,8 +569,8 @@ function pushSolverMultipliers() {
     applySolverDissipation();
 }
 
-// Dissipation is no longer phase-swapped: set once on caliber change or
-// slider drag. Base values come from FIRE_MODEL, scaled by the live mults.
+// Dissipation is set once on caliber change or slider drag. Base values
+// come from FIRE_MODEL, scaled by the live mults.
 function applySolverDissipation() {
     const cfg = window.DEBUG_CONFIG;
     FluidSim.setConfig('VELOCITY_DISSIPATION',
@@ -578,8 +598,6 @@ function syncFeatureToggleUI() {
     const cfg = window.DEBUG_CONFIG;
     const rows = {
         'debug-bloom':          cfg.bloomEnabled,
-        'debug-bloom-onset':    cfg.bloomEnabled,
-        'debug-bloom-fade':     cfg.bloomEnabled,
         'debug-curl':           cfg.curlEnabled,
         'debug-bullet-border':  cfg.bulletBorderEnabled,
     };
@@ -618,8 +636,6 @@ bindSlider(debugDenDissRange,     debugDenDissVal,     'densityDissMult',  asFlo
 bindSlider(debugSplatRadiusRange, debugSplatRadiusVal, 'splatRadiusMult',  asFloat, fmtMult);
 bindSlider(debugBloomRange,    debugBloomVal,    'bloomMult',       asFloat, fmtMult, pushSolverMultipliers);
 bindSlider(debugCurlRange,     debugCurlVal,     'curlMult',        asFloat, fmtMult, pushSolverMultipliers);
-bindSlider(debugBloomOnsetRange, debugBloomOnsetVal, 'bloomOnsetOffsetMs', asFloat, v => (v >= 0 ? '+' : '') + v.toFixed(2) + ' ms');
-bindSlider(debugBloomFadeRange,  debugBloomFadeVal,  'bloomFadeInMs',      asFloat, v => v.toFixed(2) + ' ms');
 
 // Smoke
 bindSlider(debugSmokeDurationRange, debugSmokeDurationVal, 'smokeDurationMs', asFloat, v => v.toFixed(1) + ' ms');
@@ -891,7 +907,7 @@ function rebuildObstacles(bullet) {
     // so mid-shot timing can't shift.
     sceneGeometry = Scene.computeGeometry(preset, W, H);
 
-    const obstacleData = Scene.buildObstacleTexture(
+    const { data: obstacleData, muzzleClearUV } = Scene.buildObstacleTexture(
         sceneGeometry,
         deviceMask ? deviceMask.data   : null,
         deviceMask ? deviceMask.width  : 0,
@@ -902,6 +918,11 @@ function rebuildObstacles(bullet) {
         bullet || null,
         deviceMask || null
     );
+
+    // Cache the muzzle-exit threshold on the scene snapshot so the bloom gate
+    // can read it. Bare muzzle → barrelEndX; device loaded → rightmost solid
+    // pixel of the painted mask.
+    sceneGeometry.muzzleClearUV = muzzleClearUV;
 
     FluidSim.uploadObstacleTexture(obstacleData, W, H);
 }

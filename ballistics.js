@@ -53,7 +53,7 @@ window.DEBUG_CONFIG = {
     // ─── Motion & smoke fade ───────────────────────────────────────────
     // How fast gas slows down (velocity) and fades from view (density).
     // Multiplies the base dissipation defined in FIRE_MODEL. Higher =
-    // faster fade. Applied once on change — no longer phase-swapped.
+    // faster fade.
     velocityDissMult: 1.0,
     densityDissMult:  1.0,
     splatRadiusMult:  1.0,
@@ -62,24 +62,19 @@ window.DEBUG_CONFIG = {
     bloomMult:           0.6,   // halo brightness × caliber preset
     curlMult:            1.0,   // turbulence / eddy strength × caliber preset
 
-    // Glow is silenced during the in-bore push so the visible flash reads
-    // as muzzle exit, not initial bore push.
-    // Delay = when glow is allowed to turn on, relative to the moment the
-    //         bullet tail clears the muzzle. 0 = exactly at exit. Negative
-    //         = earlier. Positive = later.
-    // Ramp  = how slowly glow swells from 0 → full. 0 = instant pop.
-    bloomOnsetOffsetMs:  0.2,
-    bloomFadeInMs:       0.05,
+    // Glow ignites the frame the bullet's tip clears the muzzle (end of
+    // barrel, or end of the loaded device mask). No time offset / fade
+    // knobs — the trigger is driven by scene geometry, not sim-time.
 
     // ─── Trailing smoke (afterburner) ──────────────────────────────────
     // Slow smoke puffs emitted for `smokeDurationMs` after the bullet
     // clears the muzzle. The initial muzzle flash itself is produced by
     // the solver venting accumulated in-bore gas — there's no scripted
     // "exit blast".
-    smokeDurationMs:     1.0,   // sim-ms the trail keeps puffing
-    smokeRateHz:         13.0,  // puffs per simulated millisecond
+    smokeDurationMs:     0.4,   // sim-ms the trail keeps puffing
+    smokeRateHz:         22.0,  // puffs per simulated millisecond
     smokeForceMult:      0.45,  // how hard each puff is pushed forward
-    smokeRadiusMult:     1.0,   // multiplier on the per-caliber puff size
+    smokeRadiusMult:     2.0,   // multiplier on the per-caliber puff size
 
     // ─── Bore seal (bullet border) ─────────────────────────────────────
     // Scales the invisible solid skirt around the bullet. Physics treats

@@ -169,16 +169,6 @@
             <input type="range" class="debug-slider" id="debug-bloom" min="0" max="1.4" step="0.05" value="1.4">
             <span class="debug-slider-val" id="debug-bloom-val">1.40×</span>
           </div>
-          <div class="debug-slider-row" title="When the flash glow is allowed to turn on, measured from the moment the bullet's tail clears the muzzle. 0 = exactly at muzzle exit. Negative = earlier. Positive = later.">
-            <span class="debug-slider-label">Glow delay</span>
-            <input type="range" class="debug-slider" id="debug-bloom-onset" min="-0.3" max="0.3" step="0.01" value="-0.1">
-            <span class="debug-slider-val" id="debug-bloom-onset-val">-0.10 ms</span>
-          </div>
-          <div class="debug-slider-row" title="How gradually the glow swells from off to full after it's allowed to turn on. 0 = instant pop. Larger = smooth swell.">
-            <span class="debug-slider-label">Glow ramp</span>
-            <input type="range" class="debug-slider" id="debug-bloom-fade" min="0" max="0.15" step="0.01" value="0">
-            <span class="debug-slider-val" id="debug-bloom-fade-val">0.00 ms</span>
-          </div>
           <div class="debug-slider-row" title="How much the gas curls and eddies on itself (vorticity). Higher = more smoke-ring and turbulent behavior. Toggle the checkbox to get perfectly laminar flow.">
             <input type="checkbox" class="debug-feature-toggle" id="debug-curl-enabled" checked>
             <span class="debug-slider-label">Turbulence / swirl</span>
@@ -196,13 +186,13 @@
         <div class="debug-group-body">
           <div class="debug-slider-row" title="How long the trail keeps emitting puffs after the bullet exits, in simulated milliseconds. 0 = trail disabled (sequence ends at muzzle exit).">
             <span class="debug-slider-label">Trail duration</span>
-            <input type="range" class="debug-slider" id="debug-smoke-duration" min="0" max="10" step="0.1" value="1">
-            <span class="debug-slider-val" id="debug-smoke-duration-val">1.0 ms</span>
+            <input type="range" class="debug-slider" id="debug-smoke-duration" min="0" max="10" step="0.1" value="0.4">
+            <span class="debug-slider-val" id="debug-smoke-duration-val">0.4 ms</span>
           </div>
           <div class="debug-slider-row" title="How many smoke puffs are emitted per simulated millisecond. Higher = denser, more continuous cloud. Lower = separated wisps.">
             <span class="debug-slider-label">Puff rate</span>
-            <input type="range" class="debug-slider" id="debug-smoke-rate" min="1" max="50" step="0.5" value="13">
-            <span class="debug-slider-val" id="debug-smoke-rate-val">13.0 Hz</span>
+            <input type="range" class="debug-slider" id="debug-smoke-rate" min="1" max="50" step="0.5" value="22">
+            <span class="debug-slider-val" id="debug-smoke-rate-val">22.0 Hz</span>
           </div>
           <div class="debug-slider-row" title="How forcefully each smoke puff is pushed forward. Higher = smoke jets out fast. Lower = smoke hangs near the muzzle and drifts.">
             <span class="debug-slider-label">Puff speed</span>
@@ -211,8 +201,8 @@
           </div>
           <div class="debug-slider-row" title="Multiplier on the per-caliber puff size. Each caliber's base puff size is interpolated from its kinetic energy (anchored at 9mm = small, .223 = big). 1.0× leaves the per-caliber default unchanged.">
             <span class="debug-slider-label">Puff size</span>
-            <input type="range" class="debug-slider" id="debug-smoke-radius" min="0.1" max="3" step="0.05" value="1">
-            <span class="debug-slider-val" id="debug-smoke-radius-val">1.00×</span>
+            <input type="range" class="debug-slider" id="debug-smoke-radius" min="0.1" max="3" step="0.05" value="2">
+            <span class="debug-slider-val" id="debug-smoke-radius-val">2.00×</span>
           </div>
         </div>
       </div>
