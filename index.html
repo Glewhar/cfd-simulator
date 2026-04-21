@@ -201,18 +201,18 @@
           </div>
           <div class="debug-slider-row" title="How many smoke puffs are emitted per simulated millisecond. Higher = denser, more continuous cloud. Lower = separated wisps.">
             <span class="debug-slider-label">Puff rate</span>
-            <input type="range" class="debug-slider" id="debug-smoke-rate" min="1" max="50" step="0.5" value="8.3">
-            <span class="debug-slider-val" id="debug-smoke-rate-val">8.3 Hz</span>
+            <input type="range" class="debug-slider" id="debug-smoke-rate" min="1" max="50" step="0.5" value="13">
+            <span class="debug-slider-val" id="debug-smoke-rate-val">13.0 Hz</span>
           </div>
           <div class="debug-slider-row" title="How forcefully each smoke puff is pushed forward. Higher = smoke jets out fast. Lower = smoke hangs near the muzzle and drifts.">
             <span class="debug-slider-label">Puff speed</span>
-            <input type="range" class="debug-slider" id="debug-smoke-force" min="0" max="5" step="0.05" value="5">
-            <span class="debug-slider-val" id="debug-smoke-force-val">5.00×</span>
+            <input type="range" class="debug-slider" id="debug-smoke-force" min="0" max="5" step="0.05" value="0.45">
+            <span class="debug-slider-val" id="debug-smoke-force-val">0.45×</span>
           </div>
-          <div class="debug-slider-row" title="Size of each smoke puff. Higher = big billowing clouds. Lower = tight thin trails.">
+          <div class="debug-slider-row" title="Multiplier on the per-caliber puff size. Each caliber's base puff size is interpolated from its kinetic energy (anchored at 9mm = small, .223 = big). 1.0× leaves the per-caliber default unchanged.">
             <span class="debug-slider-label">Puff size</span>
-            <input type="range" class="debug-slider" id="debug-smoke-radius" min="0.3" max="20" step="0.1" value="8">
-            <span class="debug-slider-val" id="debug-smoke-radius-val">8.0×</span>
+            <input type="range" class="debug-slider" id="debug-smoke-radius" min="0.1" max="3" step="0.05" value="1">
+            <span class="debug-slider-val" id="debug-smoke-radius-val">1.00×</span>
           </div>
         </div>
       </div>

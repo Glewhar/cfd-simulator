@@ -77,9 +77,9 @@ window.DEBUG_CONFIG = {
     // the solver venting accumulated in-bore gas — there's no scripted
     // "exit blast".
     smokeDurationMs:     1.0,   // sim-ms the trail keeps puffing
-    smokeRateHz:         8.3,   // puffs per simulated millisecond
-    smokeForceMult:      5.0,   // how hard each puff is pushed forward
-    smokeRadiusMult:     8.0,   // size of each puff cloud
+    smokeRateHz:         13.0,  // puffs per simulated millisecond
+    smokeForceMult:      0.45,  // how hard each puff is pushed forward
+    smokeRadiusMult:     1.0,   // multiplier on the per-caliber puff size
 
     // ─── Bore seal (bullet border) ─────────────────────────────────────
     // Scales the invisible solid skirt around the bullet. Physics treats
@@ -108,15 +108,40 @@ const FIRE_MODEL = {
     VELOCITY_DISSIPATION: 0.9,
     DENSITY_DISSIPATION:  4.0,
     TARGET_IN_BORE_SPLATS: 6,
+    // Puff size scales with the bullet's kinetic-energy proxy
+    // (bore² × bullet_length × velocity² — a stand-in for ½mv², since bullet
+    // mass tracks roughly with bore-area × length). Two anchor calibers fix
+    // the line; every other caliber linearly interpolates / extrapolates.
+    SMOKE_PUFF_REF_LOW:  { id: 'cal_9mm', PUFF_SIZE: 7  },
+    SMOKE_PUFF_REF_HIGH: { id: 'cal_223', PUFF_SIZE: 20 },
 };
+
+function bulletEnergyProxy(preset) {
+    const v = preset.MUZZLE_VELOCITY_FPS;
+    const d = preset.BORE_DIAMETER_INCHES;
+    const l = preset.BULLET_LENGTH_INCHES;
+    return d * d * l * v * v;
+}
 
 function deriveCaliberVisuals(preset) {
     const k_v = preset.MUZZLE_VELOCITY_FPS / FIRE_MODEL.V_REF_FPS;
     const k_b = preset.BORE_DIAMETER_INCHES / FIRE_MODEL.BORE_REF_INCHES;
+
+    const lowRef  = window.CALIBER_PRESETS[FIRE_MODEL.SMOKE_PUFF_REF_LOW.id];
+    const highRef = window.CALIBER_PRESETS[FIRE_MODEL.SMOKE_PUFF_REF_HIGH.id];
+    const E_low   = bulletEnergyProxy(lowRef);
+    const E_high  = bulletEnergyProxy(highRef);
+    const t       = (bulletEnergyProxy(preset) - E_low) / (E_high - E_low);
+    const SMOKE_PUFF_SIZE =
+        FIRE_MODEL.SMOKE_PUFF_REF_LOW.PUFF_SIZE
+      + (FIRE_MODEL.SMOKE_PUFF_REF_HIGH.PUFF_SIZE
+         - FIRE_MODEL.SMOKE_PUFF_REF_LOW.PUFF_SIZE) * t;
+
     return {
         BLOOM_INTENSITY: FIRE_MODEL.BLOOM_INTENSITY_BASE * Math.pow(k_v, 1.3),
         SPLAT_RADIUS:    FIRE_MODEL.SPLAT_RADIUS_BASE    * k_b,
         CURL:            FIRE_MODEL.CURL_BASE            * k_v,
+        SMOKE_PUFF_SIZE,
     };
 }
 
@@ -392,6 +417,7 @@ window.FireSequencer = class FireSequencer {
                 const smokeCol  = lerpColor(FIRE_PALETTE.COLOR, FIRE_PALETTE.SMOKE_COLOR, Math.min(1, t * 1.8));
                 const smokeBase = inBoreForce * 0.05 * Math.max(0, cfg.smokeForceMult);
                 const smokeRadius = this.derived.SPLAT_RADIUS * cfg.splatRadiusMult
+                                    * this.derived.SMOKE_PUFF_SIZE
                                     * Math.max(0.1, cfg.smokeRadiusMult);
                 splats.push({
                     x: this.barrelEndX + 0.01 + Math.random() * 0.03,
