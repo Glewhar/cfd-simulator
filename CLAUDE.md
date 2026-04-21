@@ -16,7 +16,7 @@ A Node fallback lives in `server.js`.
 | `index.html`   | UI shell: sim canvas, playback overlay, HUD panels, status bar |
 | `style.css`    | Dark theme; CSS vars `--accent: #f97316`, `--danger: #dc2626` |
 | `fluid-core.js`| Pavel's WebGL engine + obstacle-aware shaders. Exposes `window.FluidSim` |
-| `ballistics.js`| `CALIBER_PRESETS`, `FireSequencer`, `BALLISTIC_TIME`, `DEBUG_CONFIG` |
+| `ballistics.js`| `CALIBER_PRESETS`, `FIRE_PALETTE`, `FIRE_MODEL`, `deriveCaliberVisuals`, `FireSequencer`, `BALLISTIC_TIME`, `DEBUG_CONFIG` |
 | `voxelizer.js` | `.obj` / `.stl` → 2D binary obstacle mask. `Voxelizer.voxelizeFromUrl()` |
 | `scene.js`     | Obstacle texture rasterizer + canonical scene geometry. `Scene.computeGeometry` / `Scene.buildObstacleTexture` |
 | `main.js`      | App glue: state, playback state machine, frame capture, drag-to-move device |
@@ -52,32 +52,47 @@ Public API (`window.FluidSim`):
 - `getSimSize()` → `{width, height}` (aspect-ratio-corrected, NOT always 256×256)
 
 ### Caliber presets (`ballistics.js`)
-Real ballistic values per preset (`MUZZLE_VELOCITY_FPS`, `BARREL_LENGTH_INCHES`,
-`BULLET_LENGTH_INCHES`) drive both bullet kinematics AND gas-injection force.
-Caliber differences in plume strength fall out of the velocity difference
-automatically — no per-preset force tuning.
+**Presets hold physical facts only** — `MUZZLE_VELOCITY_FPS`,
+`BARREL_LENGTH_INCHES`, `BULLET_LENGTH_INCHES`, `BORE_DIAMETER_INCHES`,
+`BARREL_OD_INCHES`. No visual tuning knobs, no palette.
 
-Each preset also carries:
-- **Solver knobs** (multiplied by the matching `DEBUG_CONFIG.*Mult` slider):
-  `VELOCITY_DISSIPATION`, `DENSITY_DISSIPATION`, `CURL`, `BLOOM_INTENSITY`.
-  `PRESSURE` / `PRESSURE_ITERATIONS` are per-preset (solver stability, no slider).
-- **Geometry ratios** (UV space): `BARREL_LENGTH_RATIO`, `BORE_HALF_H_RATIO`.
-- **Splat radius**: `SPLAT_RADIUS` (Gaussian kernel width for gas injection).
-- **Palette** (four dye tints, used hot → cool):
-  `HOT_FLASH` (R/G/B > 4.0, white-hot peak) →
-  `MUZZLE_COLOR` (yellow-orange) →
-  `COLOR` (deep orange, in-bore start and smoke lerp target) →
-  `SMOKE_COLOR` (dim grey-blue).
+All visuals are **derived** from those physical values through two
+module-level constants:
+
+- **`FIRE_PALETTE`** — one shared palette for all calibers:
+  `HOT_FLASH` (white-hot peak) → `MUZZLE_COLOR` → `COLOR` (in-bore start
+  / smoke lerp source) → `SMOKE_COLOR`.
+- **`FIRE_MODEL`** — global base values (`BLOOM_INTENSITY_BASE`,
+  `SPLAT_RADIUS_BASE`, `CURL_BASE`, `VELOCITY_DISSIPATION`,
+  `DENSITY_DISSIPATION`, `PRESSURE`, `PRESSURE_ITERATIONS`,
+  `TARGET_IN_BORE_SPLATS`, reference velocity `V_REF_FPS`, reference bore
+  `BORE_REF_INCHES`).
+
+**`deriveCaliberVisuals(preset)`** returns the per-caliber triple
+`{BLOOM_INTENSITY, SPLAT_RADIUS, CURL}` with:
+- `BLOOM_INTENSITY = BASE × (v / V_REF)^1.3` — faster → brighter halo
+- `SPLAT_RADIUS    = BASE × (bore / BORE_REF)` — bigger bore → wider plume
+- `CURL            = BASE × (v / V_REF)` — faster → more turbulence
+
+This makes caliber behavior **monotonic by construction**: adding a new
+preset = adding 5 physical numbers, no visual hand-tuning.
+
+Bullet kinematics + gas-injection force are also velocity-derived
+(see Fire sequencer), so plume strength scales with muzzle velocity
+automatically.
 
 ### Fire sequencer (`ballistics.js`)
 Two-phase timeline driven by simulated milliseconds:
 
-1. **`t ∈ (0, muzzleExitMs)` — in-bore gas push.** One splat per frame behind
-   the bullet's tail. Force = `v_bullet_field · gasSpeedRatio · GAS_FORCE_SCALE · gasForceMult`,
+1. **`t ∈ (0, muzzleExitMs)` — in-bore gas push.** `N` splats per frame
+   behind the bullet's tail, where
+   `N = round(inBoreSplatRatePerSimMs × dtMs)` and
+   `inBoreSplatRatePerSimMs = FIRE_MODEL.TARGET_IN_BORE_SPLATS / muzzleExitMs`
+   (computed once in `fire()`). This compensates for fast calibers having
+   short dwell time — total in-bore splat count is constant across
+   calibers. Force = `v_bullet_field · gasSpeedRatio · GAS_FORCE_SCALE · gasForceMult`,
    ramped by `velFrac` (0 → 1 as the bullet accelerates). Color lerps
-   `COLOR → MUZZLE_COLOR → HOT_FLASH`. `gasSpeedRatio` and `gasForceMult`
-   are read from `DEBUG_CONFIG` inside `update()` so slider drags take
-   effect within the current shot.
+   `FIRE_PALETTE.COLOR → MUZZLE_COLOR → HOT_FLASH`.
 2. **`t ∈ (muzzleExitMs, muzzleExitMs + smokeDurationMs)` — settling smoke.**
    In-bore injection has stopped; the accumulated bore gas vents through the
    unblocked muzzle under the solver alone (this produces the visible muzzle
@@ -90,9 +105,10 @@ constant-acceleration textbook model using the real barrel length and
 muzzle velocity.
 
 API:
-- `fire(preset, geom)` — start a sequence. `geom` is the canonical geometry
-  snapshot (see Scene below); stored for the duration of the shot so
-  mid-shot resizes can't shift timing.
+- `fire(preset, geom)` — start a sequence. Stores `geom`, caches
+  `this.derived = deriveCaliberVisuals(preset)`, and precomputes
+  `inBoreSplatRatePerSimMs` for the duration of the shot so mid-shot
+  resizes can't shift timing.
 - `update(dtWall)` — advance, returns `[{x,y,dx,dy,color,radius,phase}]`.
 - `getBullet()` → `{xUV, yUV} | null` — position only. Length / half-height
   live on `geom` so drawing and physics agree by construction.
@@ -110,24 +126,34 @@ truth**: a pure function that returns one geometry snapshot used by both
 the obstacle painter and `FireSequencer.fire()`. This guarantees that the
 DRAWN bullet and the PHYSICS bullet agree on length, position, and timing.
 
-Returns barrel texels, bore half-height, bullet length in texels and UV,
-muzzle-exit UV x, and the device fit-box (height capped at
-`DEVICE_HEIGHT_BORE_MULT × bore`, width at `DEVICE_MAX_WIDTH_BARREL_MULT ×
-barrel`). Muzzle-device size is bore-proportional, not leftover-canvas-
-proportional, so real suppressor/brake proportions hold regardless of
-`BARREL_SCENE_SCALE`.
+Returns barrel texels, `boreHalfH`, `barrelOdHalfH` (the barrel's outer-wall
+bound), `bulletHalfH`, bullet length in texels and UV, muzzle-exit UV x,
+`texelsPerInch` (the unified physical scale, shared by barrel / bullet /
+mesh), and a legacy-fallback device fit-box (`deviceMaxW × deviceTargetH`)
+for meshes without physical info. Barrel, bullet, and uploaded meshes all
+scale off `SCENE_TEXELS_PER_INCH_OVER_REF`, so a 16" and 24" barrel render
+at a true 2:3 ratio and a 200mm suppressor stays at its real size relative
+to whichever preset is active.
+
+**Vertical axis is one regime.** A single `VERTICAL_SCALE` factor multiplies
+every Y-axis dimension derived from real inches — bore diameter, barrel OD,
+bullet diameter, and the cross-axis of uploaded meshes. The real bore is
+sub-pixel at this canvas resolution, so vertical is scaled up for
+visibility; using one factor for every Y quantity keeps ratios physically
+faithful. Horizontal dimensions (barrel length, bullet length, mesh long
+axis) stay at true `texelsPerInch`.
 
 `Scene.buildObstacleTexture(geom, deviceMask?, deviceW?, deviceH?,
 deviceScaleMult?, offsetX?, offsetY?, bullet?)` rasterizes the obstacle map:
 
-- Barrel walls above/below the bore slot for the first `barrelTexels` columns.
-- Muzzle device (optional): majority-coverage downsample of the device mask
-  into the bore-proportional fit-box, offset by drag.
+- Barrel walls: a tube bounded above and below by `barrelOdHalfH` (not
+  wall-to-wall) for the first `barrelTexels` columns.
+- Muzzle device (optional): majority-coverage downsample of the device mask.
+  Horizontal scale is true-physical (`texelsPerInch`); vertical scale picks
+  up `VERTICAL_SCALE`. Offset by drag.
 - Bullet silhouette (optional): solid body at value 255 plus an optional
-  invisible "skirt" at value 192 (above the 0.5 solid threshold but below
-  the 0.9 overlay threshold). The skirt is painted into empty cells only
-  so it can't overwrite barrel walls or the device. Gated by
-  `DEBUG_CONFIG.bulletBorderEnabled` and scaled by `bulletBorderMult`.
+  invisible "skirt" at value 192. Gated by `DEBUG_CONFIG.bulletBorderEnabled`
+  and scaled by `bulletBorderMult`.
 
 Coordinate convention: `data[j * simW + i]`, `j=0` is the bottom row
 (OpenGL UV `v = 0`).
@@ -154,9 +180,9 @@ triangleCount }`. 255 = solid, 0 = fluid.
 - **Muzzle brake** → `muzzle-break-sample.stl`
 - **Bare muzzle** (no device)
 
-Each sample entry in `MUZZLE_DEVICES` (`main.js`) knows its own projection
-axis + mode. Selecting a sample fetches the STL, voxelizes it, and uploads
-the mask to the fluid sim. The device mask is draggable in sim space.
+Each sample entry in `MUZZLE_DEVICES` knows its own projection axis + mode.
+Selecting a sample fetches the STL, voxelizes it, and uploads the mask
+to the fluid sim. The device mask is draggable in sim space.
 
 ### Main app (`main.js`)
 Key state:
@@ -177,8 +203,7 @@ Pause truly freezes everything: the solver (`FluidSim.setConfig('PAUSED',
 true)`), the sequencer (the before-step callback early-returns when not
 `'playing'`), and the replay capture (its own gate). The slider's `max` is
 set to `replayCount - 1` on pause so the range matches captured frames
-exactly. These three must not diverge — if the sim keeps running while
-capture is frozen, the slider range no longer matches what the user saw.
+exactly.
 
 Per-frame obstacle rebuild for the moving bullet:
 - While `fireSequencer.isActive && getBullet() !== null`, `rebuildObstacles(bullet)`
@@ -209,51 +234,43 @@ so the sim canvas stays draggable under empty HUD space.
 
 ## Gas behavior — tuning
 
-The solver has two orthogonal dissipation knobs, both in the advection
-shader:
-
+The solver's advection shader decays per frame:
 ```glsl
 float decay = 1.0 + dissipation * dt;
 gl_FragColor = result / decay;
 ```
-
 Higher dissipation → faster exponential decay.
 
-### Velocity (how fast gas moves / how long it persists)
-
-Gas force is derived, not hand-tuned per preset:
-
+### Force
+Gas force is velocity-derived, no per-caliber hand tuning:
 ```
 inBoreForce    = v_bullet_field × gasSpeedRatio × GAS_FORCE_SCALE × gasForceMult
 v_bullet_field = physicalMuzzleVelUV × SIM_MS_PER_WALL_SEC × simWidth
 ```
+`GAS_FORCE_SCALE = 80.0` constant; `gasForceMult` / `gasSpeedRatio` are
+sliders. `v_bullet_field` uses the UNSCALED muzzle velocity so
+`BULLET_VISUAL_SPEED_MULT = 1.0` (bullet kinematics only) doesn't
+cross-contaminate gas dynamics.
 
-The only force-related knobs are the constant `GAS_FORCE_SCALE = 80.0` and
-the two live sliders `gasForceMult` / `gasSpeedRatio`. `v_bullet_field` uses
-the UNSCALED muzzle velocity so `BULLET_VISUAL_SPEED_MULT = 4.0` (applied to
-bullet kinematics only) doesn't cross-contaminate gas dynamics.
+### Visual knobs — global, not per-preset
+All visual tuning lives in `FIRE_MODEL` and its derived values:
 
-Per-preset velocity-shape knobs (all in `ballistics.js`, multiplied by the
-matching `DEBUG_CONFIG.*Mult`):
+| Knob (global) | What it does |
+|------|------|
+| `VELOCITY_DISSIPATION` | Velocity field bulk-motion decay. × `velocityDissMult` slider. |
+| `DENSITY_DISSIPATION`  | Dye (visible smoke) decay. × `densityDissMult` slider. |
+| `SPLAT_RADIUS_BASE` × bore-ratio | Gaussian injection kernel width. × `splatRadiusMult` slider. |
+| `CURL_BASE` × k_v      | Vorticity confinement — eddies, swirl. × `curlMult` slider. |
+| `BLOOM_INTENSITY_BASE` × k_v^1.3 | Visible glow. × `bloomMult` slider. |
+| `PRESSURE` / `PRESSURE_ITERATIONS` | Solver stability (no slider). |
+| `TARGET_IN_BORE_SPLATS` | Total in-bore splat count target, held constant across calibers. |
 
-| Knob | Range | What it does |
-|------|-------|--------------|
-| `SPLAT_RADIUS` | ~0.0005–0.0010 | Gaussian injection kernel width |
-| `VELOCITY_DISSIPATION` | 0.65–1.30 | Velocity field bulk-motion decay |
-| `DENSITY_DISSIPATION` | 3.5–6.0 | Dye (visible smoke) decay |
-| `CURL` | 12–35 | Vorticity confinement — eddies, swirl |
-| `BLOOM_INTENSITY` | 0.5–1.5 | Visible glow |
-| `PRESSURE` / `PRESSURE_ITERATIONS` | — | Solver stability (no slider) |
-
-### Phase-swapped dissipation
-`applyPhaseDissipation()` in `main.js` swaps the dissipation multipliers
-live: in-bore mult while the bullet is in the barrel, bloom mult after the
-tail clears AND during IDLE (so residual smoke between auto-looped shots
-decays under the same knob that shaped it).
+Dissipation is set **once** on caliber change / slider drag — no mid-shot
+phase swap. (The historical in-bore-vs-bloom phase split was removed; it
+was invisible to users and made fast-caliber behavior non-monotonic.)
 
 ### Color progression
-Four tints per preset, lerped over simulated time inside `update()`:
-
+Shared palette, lerped over simulated time inside `update()`:
 ```
 COLOR → MUZZLE_COLOR → HOT_FLASH      (in-bore, as velFrac ramps 0 → 1)
                        ↓
@@ -261,56 +278,52 @@ COLOR → MUZZLE_COLOR → HOT_FLASH      (in-bore, as velFrac ramps 0 → 1)
                        ↓
 COLOR → SMOKE_COLOR                    (settling, as t ramps 0 → smokeDurationMs)
 ```
-
 The visible "flash goes out" effect comes from the high-magnitude palette
 values decaying under `DENSITY_DISSIPATION` + the bloom threshold; there is
 no second dye buffer.
 
 ### Scheduled bloom
 `bloomOnsetOffsetMs` + `bloomFadeInMs` gate `BLOOM_INTENSITY` along sim-time
-so the glow doesn't show during the in-bore push — the user-visible flash
-belongs to muzzle exit. Between shots (IDLE) bloom is held at full so
-residual smoke still glows. The whole halo is additionally gated by the
-`bloomEnabled` feature toggle (default **OFF** — the raw plume reads
-clearer without the halo, and a user can opt in from the debug panel).
+so the glow doesn't show during the in-bore push. Between shots (IDLE)
+bloom is held at full so residual smoke still glows. The whole halo is
+additionally gated by the `bloomEnabled` feature toggle.
 
 ### Debug panel — feature toggles vs. sliders
-Two knob types in `DEBUG_CONFIG`:
-- **`*Enabled` booleans** — full on/off. When OFF, the feature is bypassed
-  entirely regardless of slider value. Feature toggles:
-  `inboreEnabled`, `smokeEnabled`, `splatLosGuard`, `bloomLosGuard`,
-  `bloomEnabled` (default OFF), `curlEnabled`, `bulletBorderEnabled`.
-- **`*Mult` / magnitude sliders** — scale a preset value; 1.0× = unchanged.
-  Ignored when the matching feature toggle is OFF.
+- **`*Enabled` booleans** — full on/off (`inboreEnabled`, `smokeEnabled`,
+  `splatLosGuard`, `bloomLosGuard`, `bloomEnabled`, `curlEnabled`,
+  `bulletBorderEnabled`).
+- **`*Mult` sliders** — scale a derived / global value; 1.0× = unchanged.
+  Ignored when the matching feature toggle is OFF. Every slider is one
+  multiplier on one derived number — no hidden interactions.
 
-This split lets a user A/B-test a feature without losing their slider
-position. Labels in the debug panel are firearms-first (e.g. "Powder
-charge" for `gasForceMult`, "Bore seal" for `bulletBorderMult`) — the
-tooltip on each row is the canonical explanation.
+Labels are firearms-first (e.g. "Powder charge" for `gasForceMult`, "Bore
+seal" for `bulletBorderMult`); tooltips are the canonical explanation.
 
 ## Invariants to preserve
 
+- **Caliber presets are physical-only.** No `BLOOM_INTENSITY`,
+  `SPLAT_RADIUS`, `CURL`, palette, or dissipation on a preset. Visuals
+  live in `FIRE_MODEL` + `FIRE_PALETTE`, derived via
+  `deriveCaliberVisuals(preset)`. Faster caliber = brighter / bigger flash
+  by construction.
+- **One in-bore splat budget.** `TARGET_IN_BORE_SPLATS` splats per shot
+  regardless of dwell time. Compensates for fast calibers having few
+  frames in the barrel.
 - **One geometry object.** Never compute barrel texels / bore half-height /
-  bullet length outside `Scene.computeGeometry`. The painter AND the
-  sequencer must read the same snapshot.
-- **Two obstacle buffers, one solver-facing, one visual-facing.** Any
-  morphological op ("seal this thin wall") goes into the solver buffer
-  only — never the visual buffer. The user sees the true voxelized width.
+  bullet length outside `Scene.computeGeometry`.
+- **Two obstacle buffers, one solver-facing, one visual-facing.** Morph
+  ops ("seal this thin wall") go into the solver buffer only.
 - **Pause freezes solver + sequencer + capture.** All three gate on
-  `playbackState === 'playing'`. The slider's `max` must match what's in
-  the ring buffer.
-- **Bullet is an obstacle, not a particle.** It's painted at 255 like any
-  wall. The scene must be repainted every frame the bullet moves AND one
-  more time after it exits.
+  `playbackState === 'playing'`. The slider's `max` must match the ring
+  buffer.
+- **Bullet is an obstacle, not a particle.** Painted at 255 like any wall.
+  Repaint every frame it moves + one more time after it exits.
 - **LOS guards stay ON by default.** The wide smoke Gaussian respects thin
   walls only because of the splat-shader ray-march; the fast advection
-  backtrace respects them only because of the backtrace ray-march. Both
-  are exposed as debug toggles for A/B comparison but are load-bearing
-  defaults.
-- **`UNPACK_ALIGNMENT = 1`** before any obstacle `texImage2D` — default
-  alignment of 4 scrambles rows when `simWidth % 4 ≠ 0`.
+  backtrace respects them only because of the backtrace ray-march.
+- **`UNPACK_ALIGNMENT = 1`** before any obstacle `texImage2D`.
 - **Time base is split.** `sequencer.simMs` is stretched through
-  `BALLISTIC_TIME.SIM_MS_PER_WALL_SEC`; the fluid solver uses raw wall-clock
-  `dt`. Don't cross-mix.
+  `BALLISTIC_TIME.SIM_MS_PER_WALL_SEC`; the fluid solver uses raw
+  wall-clock `dt`. Don't cross-mix.
 - **Playback time readout is in milliseconds with three decimals** —
   ballistic events are sub-millisecond.

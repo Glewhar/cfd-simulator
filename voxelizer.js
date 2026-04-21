@@ -338,14 +338,49 @@ window.Voxelizer = (function () {
         throw new Error('Unsupported format: ' + ext);
     }
 
+    // Bounding box of solid cells in mask space. Used downstream to fit the
+    // mesh into the scene's bore-proportional device region — avoids scaling
+    // against the padded mask dimensions (which include fitMapping's 4% margin
+    // plus any aspect-ratio padding on the non-long axis).
+    function computeSolidBBox(data, w, h) {
+        let minI = w, maxI = -1, minJ = h, maxJ = -1;
+        for (let j = 0; j < h; j++) {
+            const row = j * w;
+            for (let i = 0; i < w; i++) {
+                if (data[row + i] > 128) {
+                    if (i < minI) minI = i;
+                    if (i > maxI) maxI = i;
+                    if (j < minJ) minJ = j;
+                    if (j > maxJ) maxJ = j;
+                }
+            }
+        }
+        if (maxI < 0) return { bboxW: 0, bboxH: 0, bboxMinI: 0, bboxMinJ: 0 };
+        return {
+            bboxW: maxI - minI + 1,
+            bboxH: maxJ - minJ + 1,
+            bboxMinI: minI,
+            bboxMinJ: minJ,
+        };
+    }
+
     function voxelizeParsed(vertices, faces, axis, resolution, opts) {
         if (!vertices.length || !faces.length) {
             throw new Error('Empty mesh (no vertices / faces parsed)');
         }
         const mode  = (opts && opts.mode)  || 'section';
+        // `units` tags the mesh's native numeric units so downstream scaling
+        // (scene.js) can convert mask pixels → inches → sim texels. STL files
+        // carry no unit information, so the caller picks it via UI toggle.
         const units = (opts && opts.units) || 'mm';
-        // Mesh vertex values are interpreted as this many units per inch.
-        const unitsPerInch = (units === 'inch') ? 1 : 25.4;
+
+        // Same fit math the rasterizers use — world-units-per-mask-pixel is
+        // the mesh's native-unit length of one output pixel, so
+        //   mask_pixels × worldPerPixel = mesh_size_in_native_units.
+        const [, uIdx, vIdx] = axisIndices(axis);
+        const bounds = computeBounds(vertices);
+        const fit = fitMapping(bounds, uIdx, vIdx, resolution, resolution, 0.04);
+        const worldPerPixel = fit.scale > 0 ? 1 / fit.scale : 0;
 
         const raw = (mode === 'silhouette')
             ? rasterizeSilhouette(vertices, faces, axis, resolution, resolution)
@@ -354,20 +389,17 @@ window.Voxelizer = (function () {
         let solid = 0;
         for (let i = 0; i < xformed.data.length; i++) if (xformed.data[i]) solid++;
 
-        // Real-world calibration: `fitMapping` scales native-units → mask-pixels
-        // uniformly on both axes, so a single scalar suffices. Convert to
-        // mask-pixels-per-inch so consumers can translate the mask into the
-        // scene at the mesh's true physical size.
-        const [, uIdx, vIdx] = axisIndices(axis);
-        const b = computeBounds(vertices);
-        const { scale } = fitMapping(b, uIdx, vIdx, resolution, resolution, 0.04);
-        const pixelsPerInch = scale * unitsPerInch;
+        const bbox = computeSolidBBox(xformed.data, xformed.width, xformed.height);
 
         xformed.solidPixels   = solid;
         xformed.totalPixels   = xformed.data.length;
         xformed.triangleCount = faces.length;
-        xformed.pixelsPerInch = pixelsPerInch;
+        xformed.bboxW         = bbox.bboxW;
+        xformed.bboxH         = bbox.bboxH;
+        xformed.bboxMinI      = bbox.bboxMinI;
+        xformed.bboxMinJ      = bbox.bboxMinJ;
         xformed.units         = units;
+        xformed.worldPerPixel = worldPerPixel;
         return xformed;
     }
 
@@ -400,6 +432,31 @@ window.Voxelizer = (function () {
         });
     }
 
-    return { voxelizeFromUrl, voxelizeFromFile };
+    // Fetch-or-read + parse without voxelizing. Used by the upload flow to
+    // measure the mesh's native-unit extents before asking the user which
+    // unit they are. `source` is either a URL string or a File.
+    function parseFromSource(source) {
+        if (typeof source === 'string') {
+            const ext = source.split('.').pop().toLowerCase();
+            return fetch(source).then(r => {
+                if (!r.ok) throw new Error('HTTP ' + r.status + ' fetching ' + source);
+                return ext === 'obj' ? r.text() : r.arrayBuffer();
+            }).then(payload => {
+                const m = parseMesh(ext, payload);
+                return { ...m, ext };
+            });
+        }
+        const ext = source.name.split('.').pop().toLowerCase();
+        return source.arrayBuffer().then(buf => {
+            const payload = (ext === 'obj') ? new TextDecoder().decode(buf) : buf;
+            const m = parseMesh(ext, payload);
+            return { ...m, ext };
+        });
+    }
+
+    return {
+        voxelizeFromUrl, voxelizeFromFile,
+        computeBounds, axisIndices, parseFromSource,
+    };
 
 })();

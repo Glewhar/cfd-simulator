@@ -26,9 +26,29 @@
 
 window.Scene = (function () {
 
-    // Shrinks barrel, bore, and bullet uniformly so that more canvas becomes
-    // fluid-expansion room. Everything else is derived from the scaled barrel.
-    const BARREL_SCENE_SCALE = 0.45;
+    // Single vertical exaggeration factor applied to every physical-inch
+    // quantity on the Y axis: bore diameter, bullet diameter, barrel OD, and
+    // the cross-axis of uploaded meshes. The real bore is sub-pixel at this
+    // canvas resolution, so everything vertical is scaled up for visibility
+    // while horizontal dimensions stay true-physical. All Y-axis features
+    // share this factor so bore/barrel/mesh ratios stay physically faithful.
+    const VERTICAL_SCALE = 1.0;
+
+    // Unified scene inches↔texels scale, caliber-INDEPENDENT. Applied to:
+    //   - barrel length  (16" vs 24" now render at the true 2:3 ratio)
+    //   - bullet length  (physical, with BULLET_MIN_TEXELS floor for visibility)
+    //   - uploaded mesh  (mesh_inches × this = sim texels)
+    //
+    //   texelsPerInch = reference × SCENE_TEXELS_PER_INCH_OVER_REF
+    //
+    // Why one constant: the previous per-caliber BARREL_LENGTH_RATIO tuned
+    // each barrel's on-screen size aesthetically, which made a 24" .308
+    // barrel only 1.1× a 16" .223 instead of the true 1.5×. Any mesh scaled
+    // against that non-physical barrel rescaled every caliber swap. With one
+    // shared scale, the mesh is automatically physically consistent — it's
+    // the same sim-texels per inch no matter which preset is active.
+    // Tuned so .308's 24" barrel takes ~36% of reference, leaving plume room.
+    const SCENE_TEXELS_PER_INCH_OVER_REF = 0.060;
 
     // Floor on the drawn bullet length (texels). Physics bullet length is read
     // back from the drawn length so timing stays consistent with what's drawn.
@@ -36,7 +56,8 @@ window.Scene = (function () {
 
     // Muzzle-device size is bore-proportional (real brakes/suppressors are
     // ~3-5× bore OD). 6× bore-half-height gives realistic silhouettes even
-    // when the bore itself is visually exaggerated.
+    // when the bore itself is visually exaggerated. Used only as the
+    // legacy-fallback sizing region when a mesh has no physical info.
     const DEVICE_HEIGHT_BORE_MULT    = 6.0;
     const DEVICE_MAX_WIDTH_BARREL_MULT = 1.6;
 
@@ -51,21 +72,33 @@ window.Scene = (function () {
         // Anchor to the shorter axis so the barrel/bore stay fixed on-screen
         // as the window resizes — the longer axis becomes expansion room.
         const reference    = Math.min(simWidth, simHeight);
-        const barrelTexels = Math.max(8,
-            Math.round(reference * preset.BARREL_LENGTH_RATIO * BARREL_SCENE_SCALE));
 
-        // Real-inches ↔ texel ratio, derived from the one physical dimension
-        // we know (barrel length). Reused for bullet length.
-        const texelsPerInch = barrelTexels / preset.BARREL_LENGTH_INCHES;
+        // Universal inches↔texels — shared by barrel, bullet, and mesh. Caliber
+        // only picks the physical inches; the mapping to sim texels is the
+        // same across all presets, so swapping calibers now rescales ONLY the
+        // per-caliber physical dimensions (barrel/bullet length) without
+        // touching the mesh.
+        const texelsPerInch = reference * SCENE_TEXELS_PER_INCH_OVER_REF;
+
+        const barrelTexels = Math.max(8,
+            Math.round(preset.BARREL_LENGTH_INCHES * texelsPerInch));
 
         const physicalBulletTexels = preset.BULLET_LENGTH_INCHES * texelsPerInch;
         const bulletLenTexels      = Math.max(BULLET_MIN_TEXELS,
             Math.round(physicalBulletTexels));
 
-        // Visually-exaggerated bore (real bore is sub-pixel on this canvas).
-        const boreHalfH        = Math.max(2,
-            Math.round(reference * preset.BORE_HALF_H_RATIO * BARREL_SCENE_SCALE));
-        const bulletHalfHRatio = preset.BORE_HALF_H_RATIO * 0.92;  // slight clearance
+        // Every vertical dimension is derived from real inches × texelsPerInch
+        // × VERTICAL_SCALE. Bore, barrel OD, and bullet diameter all share
+        // that factor, so their on-screen ratios match their true physical
+        // ratios (e.g. a 0.75" OD barrel reads 3.35× a 0.224" bore).
+        const boreHalfH     = Math.max(2,
+            Math.round(preset.BORE_DIAMETER_INCHES * 0.5 * texelsPerInch * VERTICAL_SCALE));
+        const barrelOdHalfH = Math.max(boreHalfH + 2,
+            Math.round(preset.BARREL_OD_INCHES    * 0.5 * texelsPerInch * VERTICAL_SCALE));
+        // Slight clearance inside the bore so the bullet silhouette doesn't
+        // paint into the bore wall.
+        const bulletHalfH   = Math.max(1,
+            Math.round(preset.BORE_DIAMETER_INCHES * 0.5 * texelsPerInch * VERTICAL_SCALE * 0.92));
 
         const bulletStartX   = BULLET_START_UV;
         const barrelEndX     = barrelTexels / simWidth;
@@ -81,10 +114,10 @@ window.Scene = (function () {
             barrelTexels, barrelEndX,
             bulletStartX, barrelLenUV,
             boreCenterJ: Math.floor(simHeight / 2),
-            boreHalfH,
-            bulletLenTexels, bulletLengthUV, bulletHalfHRatio,
+            boreHalfH, barrelOdHalfH,
+            bulletLenTexels, bulletLengthUV, bulletHalfH,
             deviceTargetH, deviceMaxW,
-            texelsPerInch,
+            texelsPerInch, verticalScale: VERTICAL_SCALE,
         };
     }
 
@@ -101,24 +134,29 @@ window.Scene = (function () {
      * @param {number}     [offsetX] drag offset in sim pixels (+right)
      * @param {number}     [offsetY] drag offset in sim pixels (+up)
      * @param {{xUV:number, yUV:number}} [bullet] bullet center position
-     * @param {number}     [devicePixelsPerInch] if > 0, the mesh is placed at
-     *        its REAL size using this factor + `geom.texelsPerInch` — so a 6"
-     *        suppressor on a 16" barrel draws at 6/16 of the barrel length.
-     *        Falls back to bore-proportional fit-to-box when 0/absent.
+     * @param {{bboxW:number, bboxH:number, bboxMinI:number, bboxMinJ:number}}
+     *        [deviceBBox] bounding box of the mesh's solid cells in mask space.
+     *        When supplied, calibration fits the mesh bbox into the scene's
+     *        bore-proportional device region (`deviceMaxW × deviceTargetH`) —
+     *        this is unit-agnostic and uses the scene's barrel/bore metrics
+     *        as the single physical reference. Falls back to full-mask fit
+     *        when absent.
      * @returns {Uint8Array} obstacle map (255 = solid, 0 = fluid)
      */
     function buildObstacleTexture(geom, deviceMask, deviceW, deviceH,
                                   deviceScaleMult, offsetX, offsetY, bullet,
-                                  devicePixelsPerInch) {
+                                  deviceBBox) {
         const { simWidth, simHeight, barrelTexels, boreCenterJ, boreHalfH,
-                bulletLenTexels } = geom;
+                barrelOdHalfH, bulletLenTexels } = geom;
         const data = new Uint8Array(simWidth * simHeight);
 
-        // ── Barrel: solid above/below the bore slot, for the first
-        //    `barrelTexels` columns of the scene. ────────────────────────────
-        for (let j = 0; j < simHeight; j++) {
-            const inBore = Math.abs(j - boreCenterJ) <= boreHalfH;
-            if (inBore) continue;
+        // ── Barrel: a tube bounded by barrelOdHalfH (not wall-to-wall). Above
+        //    and below the tube is open fluid space, so uploaded muzzle
+        //    devices sit against an honest outer diameter reference. ────────
+        const jLo = Math.max(0, boreCenterJ - barrelOdHalfH);
+        const jHi = Math.min(simHeight - 1, boreCenterJ + barrelOdHalfH);
+        for (let j = jLo; j <= jHi; j++) {
+            if (Math.abs(j - boreCenterJ) <= boreHalfH) continue;  // bore slot
             for (let i = 0; i < barrelTexels; i++) {
                 data[j * simWidth + i] = 255;
             }
@@ -129,28 +167,63 @@ window.Scene = (function () {
         // mark dest solid when ≥50% of its source box is solid.
         if (deviceMask && deviceW > 0 && deviceH > 0) {
             const unitMult  = (deviceScaleMult > 0) ? deviceScaleMult : 1.0;
-            // Real-units path: scale the mask so one mask-pixel represents the
-            // same real-world inch count the barrel uses. Fit-to-box path
-            // (when pixelsPerInch is unknown): bore-proportional sizing.
-            let baseScale;
-            if (devicePixelsPerInch > 0 && geom.texelsPerInch > 0) {
-                baseScale = geom.texelsPerInch / devicePixelsPerInch;
+            // Physical scale: same inches↔texels mapping as barrel + bullet
+            // (geom.texelsPerInch is unified across the scene now, so this
+            // is caliber-independent by construction — switching presets
+            // rescales the barrel/bullet but leaves the mesh alone).
+            //
+            //   texelsPerMaskPixel = worldPerPixel × unitToInch × texelsPerInch
+            //
+            // Falls back to bbox-fit into the bore-proportional device region
+            // when the physical info is missing (legacy caller paths).
+            const units       = (deviceBBox && deviceBBox.units) || 'mm';
+            const unitToInch  = (units === 'inch' || units === 'in') ? 1 : (1 / 25.4);
+            const wpp         = deviceBBox ? deviceBBox.worldPerPixel : 0;
+            const pLenIn      = deviceBBox ? (deviceBBox.physicalLengthInches || 0) : 0;
+            const bboxW       = deviceBBox ? deviceBBox.bboxW : 0;
+            // Non-uniform when a physical scale is known: horizontal stays at
+            // true-physical (texelsPerInch), vertical picks up VERTICAL_SCALE
+            // so the mesh's OD matches the bore/barrel exaggeration regime.
+            // The legacy bbox-fit fallback stays uniform — nothing physical
+            // to hang a ratio on.
+            let baseScaleX, baseScaleY;
+            if (pLenIn > 0 && bboxW > 0 && geom.texelsPerInch > 0) {
+                // Highest priority: caller supplied the mesh's authored long-axis
+                // length (samples tagged with catalog dimensions). Pins the
+                // solid bbox's u-extent to exactly that many scene texels,
+                // bypassing unit guesses and section-slice rounding.
+                baseScaleX = (pLenIn * geom.texelsPerInch) / bboxW;
+                baseScaleY = baseScaleX * VERTICAL_SCALE;
+            } else if (wpp > 0 && geom.texelsPerInch > 0) {
+                baseScaleX = wpp * unitToInch * geom.texelsPerInch;
+                baseScaleY = baseScaleX * VERTICAL_SCALE;
             } else {
-                baseScale = Math.min(geom.deviceMaxW / deviceW,
-                                     geom.deviceTargetH / deviceH);
+                const fitW = (bboxW > 0) ? bboxW : deviceW;
+                const fitH = (deviceBBox && deviceBBox.bboxH > 0) ? deviceBBox.bboxH : deviceH;
+                const fitScale = Math.min(geom.deviceMaxW / fitW,
+                                          geom.deviceTargetH / fitH);
+                baseScaleX = fitScale;
+                baseScaleY = fitScale;
             }
-            const canvasCap = Math.min(
-                (simWidth  - barrelTexels - 2) / deviceW,
-                (simHeight - 4)                / deviceH,
-            );
-            const scale   = Math.min(baseScale * unitMult, canvasCap);
-            const scaledW = Math.max(1, Math.round(deviceW * scale));
-            const scaledH = Math.max(1, Math.round(deviceH * scale));
+            const canvasCapX = (simWidth  - barrelTexels - 2) / deviceW;
+            const canvasCapY = (simHeight - 4)                / deviceH;
+            const scaleX  = Math.min(baseScaleX * unitMult, canvasCapX);
+            const scaleY  = Math.min(baseScaleY * unitMult, canvasCapY);
+            const scaledW = Math.max(1, Math.round(deviceW * scaleX));
+            const scaledH = Math.max(1, Math.round(deviceH * scaleY));
+
+            // Anchor the mesh's bbox so its left edge meets the muzzle. Without
+            // this, the fitMapping 4% mask padding leaves a visible gap between
+            // barrel and device at rest (before any drag offset).
+            const bboxShiftI = deviceBBox ? Math.round(deviceBBox.bboxMinI * scaleX) : 0;
+            const bboxHalfJ  = deviceBBox
+                ? Math.round((deviceBBox.bboxMinJ + deviceBBox.bboxH / 2) * scaleY)
+                : Math.floor(scaledH / 2);
 
             const ox = (offsetX | 0);
             const oy = (offsetY | 0);
-            const startI = barrelTexels + ox;
-            const startJ = boreCenterJ - Math.floor(scaledH / 2) + oy;
+            const startI = barrelTexels - bboxShiftI + ox;
+            const startJ = boreCenterJ  - bboxHalfJ  + oy;
 
             // djNat = scaledH-1-dj handles Y-flip (source row 0 = top of image).
             for (let dj = 0; dj < scaledH; dj++) {
@@ -194,8 +267,7 @@ window.Scene = (function () {
         // injected just behind the tail. `bulletBorderMult` scales the skirt.
         if (bullet) {
             const halfLenTexels = Math.max(1, Math.round(bulletLenTexels / 2));
-            const bulletHalfH   = Math.max(1,
-                Math.round(geom.reference * geom.bulletHalfHRatio * BARREL_SCENE_SCALE));
+            const bulletHalfH   = geom.bulletHalfH;
             const centerI       = Math.round(bullet.xUV * simWidth);
             const centerJ       = Math.round(bullet.yUV * simHeight);
             const ogiveLen      = Math.max(1, Math.round(halfLenTexels * 0.7));

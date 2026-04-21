@@ -362,6 +362,40 @@ html, body {
   border-color: var(--accent);
 }
 
+/* Upload units prompt — inline panel revealed after file pick. */
+#upload-units-prompt {
+  margin-top: 8px;
+  padding: 8px;
+  background: var(--surface);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+}
+
+.upload-prompt-msg {
+  font-size: 10px;
+  color: var(--text);
+  margin-bottom: 6px;
+  line-height: 1.4;
+}
+
+.upload-prompt-buttons {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.upload-prompt-buttons .device-btn {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 4px 6px;
+  font-size: 10px;
+}
+
+#upload-cancel {
+  flex: 0 0 auto;
+  color: var(--muted);
+}
+
 /* Row of small option buttons (axis / mode / orient) */
 .device-opt-row {
   display: flex;

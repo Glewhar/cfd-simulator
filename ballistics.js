@@ -50,16 +50,13 @@ window.DEBUG_CONFIG = {
     // the bullet (unphysical but good for stylising the plume).
     gasSpeedRatio:       0.1,
 
-    // ─── Motion & smoke fade (phase-swapped live) ──────────────────────
+    // ─── Motion & smoke fade ───────────────────────────────────────────
     // How fast gas slows down (velocity) and fades from view (density).
-    // "In barrel" values apply while the bullet is still in the bore; "after
-    // exit" values apply from muzzle exit onward AND during IDLE between
-    // shots, so lingering smoke decays under the same knob that shaped it.
-    // Higher = faster fade.
-    velocityDissInboreMult: 0.5,
-    velocityDissBloomMult:  0.5,
-    densityDissInboreMult:  0.25,
-    densityDissBloomMult:   0.9,
+    // Multiplies the base dissipation defined in FIRE_MODEL. Higher =
+    // faster fade. Applied once on change — no longer phase-swapped.
+    velocityDissMult: 1.0,
+    densityDissMult:  1.0,
+    splatRadiusMult:  1.0,
 
     // ─── Glow (only active when bloomEnabled) ──────────────────────────
     bloomMult:           0.6,   // halo brightness × caliber preset
@@ -71,7 +68,7 @@ window.DEBUG_CONFIG = {
     //         bullet tail clears the muzzle. 0 = exactly at exit. Negative
     //         = earlier. Positive = later.
     // Ramp  = how slowly glow swells from 0 → full. 0 = instant pop.
-    bloomOnsetOffsetMs:  0.0,
+    bloomOnsetOffsetMs:  0.2,
     bloomFadeInMs:       0.05,
 
     // ─── Trailing smoke (afterburner) ──────────────────────────────────
@@ -90,10 +87,47 @@ window.DEBUG_CONFIG = {
     bulletBorderMult:    1.0,
 };
 
+// ─── Shared palette & fire-model constants ───────────────────────────────────
+// All calibers share one palette; visible differences come from velocity +
+// bore scaling into bloom / splat-radius / curl via deriveCaliberVisuals.
+const FIRE_PALETTE = {
+    COLOR:        { r: 2.0,  g: 0.7,  b: 0.08 },
+    MUZZLE_COLOR: { r: 3.5,  g: 2.3,  b: 0.6  },
+    HOT_FLASH:    { r: 5.0,  g: 4.0,  b: 1.9  },
+    SMOKE_COLOR:  { r: 0.32, g: 0.30, b: 0.36 },
+};
+
+const FIRE_MODEL = {
+    V_REF_FPS:            1800,
+    BORE_REF_INCHES:      0.30,
+    BLOOM_INTENSITY_BASE: 0.9,
+    SPLAT_RADIUS_BASE:    0.00070,
+    CURL_BASE:            20,
+    PRESSURE:             0.82,
+    PRESSURE_ITERATIONS:  25,
+    VELOCITY_DISSIPATION: 0.9,
+    DENSITY_DISSIPATION:  4.0,
+    TARGET_IN_BORE_SPLATS: 6,
+};
+
+function deriveCaliberVisuals(preset) {
+    const k_v = preset.MUZZLE_VELOCITY_FPS / FIRE_MODEL.V_REF_FPS;
+    const k_b = preset.BORE_DIAMETER_INCHES / FIRE_MODEL.BORE_REF_INCHES;
+    return {
+        BLOOM_INTENSITY: FIRE_MODEL.BLOOM_INTENSITY_BASE * Math.pow(k_v, 1.3),
+        SPLAT_RADIUS:    FIRE_MODEL.SPLAT_RADIUS_BASE    * k_b,
+        CURL:            FIRE_MODEL.CURL_BASE            * k_v,
+    };
+}
+
+window.FIRE_PALETTE = FIRE_PALETTE;
+window.FIRE_MODEL   = FIRE_MODEL;
+window.deriveCaliberVisuals = deriveCaliberVisuals;
+
 // ─── Caliber Presets ──────────────────────────────────────────────────────────
-// Real ballistic values (FPS, barrel length, bullet length) drive bullet
-// kinematics AND gas-injection force. Caliber differences in plume strength
-// fall out of the velocity difference automatically.
+// Physical values only. Visible differences (bloom, curl, splat radius) are
+// derived from MUZZLE_VELOCITY_FPS and BORE_DIAMETER_INCHES via
+// deriveCaliberVisuals; all calibers share FIRE_PALETTE.
 window.CALIBER_PRESETS = {
 
     cal_223: {
@@ -101,21 +135,10 @@ window.CALIBER_PRESETS = {
         label: '.223 Rem',
         desc:  '55k PSI · 3,000 fps · .224" bore',
         MUZZLE_VELOCITY_FPS:    3000,
-        BARREL_LENGTH_INCHES:   16,
+        BARREL_LENGTH_INCHES:   2,
         BULLET_LENGTH_INCHES:   0.91,        // M855 62gr FMJ
-        VELOCITY_DISSIPATION: 0.72,
-        DENSITY_DISSIPATION:  3.9,
-        PRESSURE_ITERATIONS:  32,
-        CURL:                 35,
-        PRESSURE:             0.85,
-        BLOOM_INTENSITY:      1.3,
-        SPLAT_RADIUS:         0.00055,
-        BARREL_LENGTH_RATIO:  0.38,
-        BORE_HALF_H_RATIO:    0.036,
-        COLOR:        { r: 2.2, g: 0.8, b: 0.08 },
-        MUZZLE_COLOR: { r: 4.0, g: 2.5, b: 0.8 },
-        HOT_FLASH:    { r: 5.5, g: 4.5, b: 2.2 },
-        SMOKE_COLOR:  { r: 0.35, g: 0.35, b: 0.40 },
+        BORE_DIAMETER_INCHES:   0.224,
+        BARREL_OD_INCHES:       0.75,        // typical AR-15 medium contour
     },
 
     cal_308: {
@@ -123,21 +146,10 @@ window.CALIBER_PRESETS = {
         label: '.308 Win',
         desc:  '62k PSI · 2,700 fps · .308" bore',
         MUZZLE_VELOCITY_FPS:    2700,
-        BARREL_LENGTH_INCHES:   24,
+        BARREL_LENGTH_INCHES:   2,
         BULLET_LENGTH_INCHES:   1.22,        // 168gr Sierra MatchKing
-        VELOCITY_DISSIPATION: 0.65,
-        DENSITY_DISSIPATION:  3.5,
-        PRESSURE_ITERATIONS:  35,
-        CURL:                 28,
-        PRESSURE:             0.9,
-        BLOOM_INTENSITY:      1.5,
-        SPLAT_RADIUS:         0.00080,
-        BARREL_LENGTH_RATIO:  0.42,
-        BORE_HALF_H_RATIO:    0.049,
-        COLOR:        { r: 1.8, g: 0.55, b: 0.05 },
-        MUZZLE_COLOR: { r: 3.5, g: 2.0, b: 0.4 },
-        HOT_FLASH:    { r: 5.0, g: 4.0, b: 1.8 },
-        SMOKE_COLOR:  { r: 0.30, g: 0.30, b: 0.36 },
+        BORE_DIAMETER_INCHES:   0.308,
+        BARREL_OD_INCHES:       0.85,        // typical AR-10 / bolt barrel
     },
 
     cal_300blk_super: {
@@ -145,21 +157,10 @@ window.CALIBER_PRESETS = {
         label: '300 BLK ⚡',
         desc:  '55k PSI · 2,150 fps · supersonic',
         MUZZLE_VELOCITY_FPS:    2150,
-        BARREL_LENGTH_INCHES:   9,
+        BARREL_LENGTH_INCHES:   2,
         BULLET_LENGTH_INCHES:   1.14,        // 125gr Sierra MatchKing
-        VELOCITY_DISSIPATION: 0.85,
-        DENSITY_DISSIPATION:  4.2,
-        PRESSURE_ITERATIONS:  28,
-        CURL:                 30,
-        PRESSURE:             0.82,
-        BLOOM_INTENSITY:      1.1,
-        SPLAT_RADIUS:         0.00080,
-        BARREL_LENGTH_RATIO:  0.32,
-        BORE_HALF_H_RATIO:    0.049,
-        COLOR:        { r: 1.6, g: 0.5, b: 0.06 },
-        MUZZLE_COLOR: { r: 3.0, g: 1.8, b: 0.3 },
-        HOT_FLASH:    { r: 4.5, g: 3.5, b: 1.5 },
-        SMOKE_COLOR:  { r: 0.32, g: 0.30, b: 0.34 },
+        BORE_DIAMETER_INCHES:   0.308,
+        BARREL_OD_INCHES:       0.75,        // same platform as .223
     },
 
     cal_300blk_sub: {
@@ -167,21 +168,10 @@ window.CALIBER_PRESETS = {
         label: '300 BLK 🔇',
         desc:  '35k PSI · 1,050 fps · subsonic',
         MUZZLE_VELOCITY_FPS:    1050,
-        BARREL_LENGTH_INCHES:   9,
+        BARREL_LENGTH_INCHES:   2,
         BULLET_LENGTH_INCHES:   1.43,        // 220gr Sierra MatchKing
-        VELOCITY_DISSIPATION: 1.30,
-        DENSITY_DISSIPATION:  6.0,
-        PRESSURE_ITERATIONS:  20,
-        CURL:                 15,
-        PRESSURE:             0.7,
-        BLOOM_INTENSITY:      0.5,
-        SPLAT_RADIUS:         0.00080,
-        BARREL_LENGTH_RATIO:  0.32,
-        BORE_HALF_H_RATIO:    0.049,
-        COLOR:        { r: 0.7, g: 0.22, b: 0.03 },
-        MUZZLE_COLOR: { r: 1.0, g: 0.4, b: 0.1 },
-        HOT_FLASH:    { r: 1.4, g: 0.7, b: 0.15 },
-        SMOKE_COLOR:  { r: 0.28, g: 0.28, b: 0.32 },
+        BORE_DIAMETER_INCHES:   0.308,
+        BARREL_OD_INCHES:       0.75,        // same platform as .223
     },
 
     cal_9mm: {
@@ -189,21 +179,10 @@ window.CALIBER_PRESETS = {
         label: '9mm',
         desc:  '35k PSI · 1,200 fps · .355" bore',
         MUZZLE_VELOCITY_FPS:    1200,
-        BARREL_LENGTH_INCHES:   5,
+        BARREL_LENGTH_INCHES:   2,
         BULLET_LENGTH_INCHES:   0.66,        // 147gr — common heavy load
-        VELOCITY_DISSIPATION: 1.05,
-        DENSITY_DISSIPATION:  4.9,
-        PRESSURE_ITERATIONS:  20,
-        CURL:                 12,
-        PRESSURE:             0.72,
-        BLOOM_INTENSITY:      0.75,
-        SPLAT_RADIUS:         0.00072,
-        BARREL_LENGTH_RATIO:  0.22,
-        BORE_HALF_H_RATIO:    0.058,
-        COLOR:        { r: 1.5, g: 1.0, b: 0.15 },
-        MUZZLE_COLOR: { r: 3.0, g: 2.5, b: 0.5 },
-        HOT_FLASH:    { r: 4.5, g: 3.8, b: 1.7 },
-        SMOKE_COLOR:  { r: 0.34, g: 0.32, b: 0.34 },
+        BORE_DIAMETER_INCHES:   0.355,
+        BARREL_OD_INCHES:       0.65,        // pistol / PCC barrel
     },
 };
 
@@ -239,7 +218,7 @@ const GAS_FORCE_SCALE = 80.0;
 
 // Visual-only speedup applied to bullet kinematics. Gas force magnitudes are
 // computed from the UNSCALED muzzle velocity so gas dynamics are unchanged.
-const BULLET_VISUAL_SPEED_MULT = 4.0;
+const BULLET_VISUAL_SPEED_MULT = 1.0;
 
 window.FireSequencer = class FireSequencer {
 
@@ -297,12 +276,23 @@ window.FireSequencer = class FireSequencer {
         this.muzzleExitMs       = this.barrelTravelMs
             + (this.bulletLengthUV / 2) / this.muzzleVelUV_per_ms;
 
-        // Bullet velocity in the advection shader's units:
-        //   v_bullet_field = muzzleVelUV_per_ms · SIM_MS_PER_WALL_SEC · simWidth
+        // Per-sim-ms splat rate, chosen so every caliber gets a comparable
+        // dye count during the in-bore push regardless of how short
+        // muzzleExitMs ends up. Without this, fast calibers (short muzzle-exit
+        // window) would emit 1–2 splats per shot while slow calibers emit 4+.
+        this.inBoreSplatRatePerSimMs =
+            FIRE_MODEL.TARGET_IN_BORE_SPLATS / this.muzzleExitMs;
+        this.derived = deriveCaliberVisuals(preset);
+
+        // Bullet velocity in the advection shader's units (texels per sim-ms,
+        // rescaled to the shader's wall-clock seconds at baseline SIM_MS_PER_WALL_SEC=1.0).
         // Uses the UNSCALED muzzle velocity so BULLET_VISUAL_SPEED_MULT
-        // doesn't scale gas force.
-        const timeStretch = window.BALLISTIC_TIME.SIM_MS_PER_WALL_SEC;
-        this.v_bullet_field = physicalMuzzleVelUV * timeStretch * geom.simWidth;
+        // doesn't scale gas force. The SIM_MS_PER_WALL_SEC factor is NOT applied
+        // here — slow-motion is handled by scaling the solver's dt uniformly
+        // (in fluid-core) so advection and decay slow together. Baking the
+        // factor into the velocity would slow advection but leave decay at
+        // full wall-rate, making the gas "die too fast" under slow-mo.
+        this.v_bullet_field = physicalMuzzleVelUV * geom.simWidth;
     }
 
     get isActive() { return this.state !== 'IDLE'; }
@@ -342,7 +332,6 @@ window.FireSequencer = class FireSequencer {
         if (this.state === 'IDLE') return [];
         const dtMs = dtWall * window.BALLISTIC_TIME.SIM_MS_PER_WALL_SEC;
         this.simMs += dtMs;
-        const p   = this.preset;
         const cfg = window.DEBUG_CONFIG;
         const splats = [];
 
@@ -368,18 +357,26 @@ window.FireSequencer = class FireSequencer {
 
             // Color ramps COLOR → MUZZLE_COLOR → HOT_FLASH with pressure.
             let color;
-            if (velFrac < 0.5) color = lerpColor(p.COLOR,        p.MUZZLE_COLOR, velFrac * 2);
-            else               color = lerpColor(p.MUZZLE_COLOR, p.HOT_FLASH,   (velFrac - 0.5) * 2);
+            if (velFrac < 0.5) color = lerpColor(FIRE_PALETTE.COLOR,        FIRE_PALETTE.MUZZLE_COLOR, velFrac * 2);
+            else               color = lerpColor(FIRE_PALETTE.MUZZLE_COLOR, FIRE_PALETTE.HOT_FLASH,   (velFrac - 0.5) * 2);
 
-            splats.push({
-                x: gasX,
-                y: this.boreY,
-                dx: perFrameForce,
-                dy: 0,
-                color,
-                radius: p.SPLAT_RADIUS * (1.0 + velFrac * 0.5),
-                phase: 'inbore',
-            });
+            const radius = this.derived.SPLAT_RADIUS * cfg.splatRadiusMult
+                           * (1.0 + velFrac * 0.5);
+
+            // Emit a frame-rate-compensated number of splats so fast calibers
+            // (tiny muzzleExitMs) get the same total dye count as slow ones.
+            const nSplats = Math.max(1, Math.round(this.inBoreSplatRatePerSimMs * dtMs));
+            for (let i = 0; i < nSplats; i++) {
+                splats.push({
+                    x: gasX,
+                    y: this.boreY,
+                    dx: perFrameForce,
+                    dy: 0,
+                    color,
+                    radius,
+                    phase: 'inbore',
+                });
+            }
         }
 
         // ── Phase 2: SETTLING SMOKE ──────────────────────────────────────
@@ -392,15 +389,17 @@ window.FireSequencer = class FireSequencer {
                 const rateHz = Math.max(0.1, cfg.smokeRateHz);
                 this.smokeCooldownMs = 1.0 / rateHz;
                 const t = (this.simMs - this.muzzleExitMs) / smokeDurationMs;
-                const smokeCol  = lerpColor(p.COLOR, p.SMOKE_COLOR, Math.min(1, t * 1.8));
+                const smokeCol  = lerpColor(FIRE_PALETTE.COLOR, FIRE_PALETTE.SMOKE_COLOR, Math.min(1, t * 1.8));
                 const smokeBase = inBoreForce * 0.05 * Math.max(0, cfg.smokeForceMult);
+                const smokeRadius = this.derived.SPLAT_RADIUS * cfg.splatRadiusMult
+                                    * Math.max(0.1, cfg.smokeRadiusMult);
                 splats.push({
                     x: this.barrelEndX + 0.01 + Math.random() * 0.03,
                     y: this.boreY,
                     dx: smokeBase * (1.2 + Math.random() * 1.0),
                     dy: smokeBase * (Math.random() - 0.5) * 0.6,
                     color: smokeCol,
-                    radius: p.SPLAT_RADIUS * Math.max(0.1, cfg.smokeRadiusMult),
+                    radius: smokeRadius,
                     phase: 'smoke',
                 });
             }

@@ -15,9 +15,17 @@ const MUZZLE_DEVICES = {
         id:             'suppressor',
         label:          'Suppressor',
         url:            'supressor_sample.stl',
-        projectionAxis: 'y',         // top-down (XZ plane)
-        projectionMode: 'section',   // axial cross-section: walls + baffles + bore
+        // The suppressor mesh's long axis is Z (200mm-ish), so viewing from +X
+        // gives the correct side-view silhouette (length horizontal, OD
+        // vertical). Y-view would collapse the length into the V axis and
+        // render the suppressor as a tall narrow column.
+        projectionAxis: 'x',
+        projectionMode: 'section',
         units:          'mm',
+        // Authored catalog size — measured from STL bounds (Z = 200mm).
+        // Pins the rendered long-axis length so section-slice rounding and
+        // unit misinterpretation can't drift the size off catalog.
+        physicalLengthInches: 200 / 25.4,   // 7.874"
     },
     muzzle_brake: {
         id:             'muzzle_brake',
@@ -26,6 +34,8 @@ const MUZZLE_DEVICES = {
         projectionAxis: 'y',
         projectionMode: 'section',
         units:          'mm',
+        // Authored catalog size — measured from STL bounds (X = 55.5mm).
+        physicalLengthInches: 55.5 / 25.4,  // 2.185"
     },
 };
 
@@ -39,18 +49,24 @@ let fireSequencer     = new FireSequencer();
 
 // Mesh source: either a built-in sample URL or an uploaded File. Kept so that
 // an axis/mode/flip/rotate change can re-voxelize the SAME source in place
-// without losing the user's custom upload.
-// deviceSource = { kind:'sample', id, url, label } | { kind:'file', file, label } | null
+// without losing the user's custom upload. Sample sources carry an authored
+// physicalLengthInches that pins the rendered size to catalog dimensions,
+// bypassing section-slice rounding.
+// deviceSource = { kind:'sample', id, url, label, physicalLengthInches? }
+//              | { kind:'file', file, label, physicalLengthInches? } | null
 let deviceSource = null;
 
 // Projection + orientation controls (live, re-voxelize on change)
 let deviceAxis  = 'y';                              // 'x' | 'y' | 'z'
 let deviceMode  = 'section';                        // 'section' | 'silhouette'
 let deviceXform = { flipX: false, flipY: false, rotate: 0 };  // rotate ∈ {0,90,180,270}
-// Mesh unit interpretation. STLs carry no unit metadata. Default is inch
-// (firearm CAD convention); built-in samples override this via their own
-// `units` field. Toggle re-voxelizes.
-let deviceUnits = 'inch';                           // 'mm' | 'inch'
+
+// Mesh native units for physical-size scaling against the barrel reference.
+// STLs carry no unit information, so the user picks mm or inch from the UI.
+// Flipping this is a re-PAINT (rebuildObstacles) — no re-voxelization needed
+// because the mask's worldPerPixel is in native units regardless of what we
+// interpret them as.
+let deviceUnits = 'mm';                             // 'mm' | 'inch'
 
 // Playback state machine
 let playbackState = 'idle';  // 'idle' | 'playing' | 'paused'
@@ -77,12 +93,17 @@ const deviceStatus   = document.getElementById('device-status');
 const devicePreview  = document.getElementById('device-preview');
 const deviceFileInput= document.getElementById('device-file');
 const deviceUploadBtn= document.getElementById('device-upload-btn');
+const uploadPrompt   = document.getElementById('upload-units-prompt');
+const uploadPromptMsg= document.getElementById('upload-prompt-msg');
+const uploadPickMmBtn= document.getElementById('upload-pick-mm');
+const uploadPickInBtn= document.getElementById('upload-pick-in');
+const uploadCancelBtn= document.getElementById('upload-cancel');
 const axisButtons    = document.querySelectorAll('.opt-btn[data-axis]');
 const modeButtons    = document.querySelectorAll('.opt-btn[data-mode]');
-const unitsButtons   = document.querySelectorAll('.opt-btn[data-units]');
 const xformFlipXBtn  = document.getElementById('xform-flipx');
 const xformFlipYBtn  = document.getElementById('xform-flipy');
 const xformRotateBtn = document.getElementById('xform-rotate');
+const unitButtons    = document.querySelectorAll('.opt-btn[data-unit]');
 const fireBtn        = document.getElementById('fire-btn');
 const statusText     = document.getElementById('status-text');
 const playbackPanel  = document.getElementById('playback-panel');
@@ -104,14 +125,12 @@ const debugGasForceRange  = document.getElementById('debug-gas-force');
 const debugGasForceVal    = document.getElementById('debug-gas-force-val');
 const debugGasRatioRange  = document.getElementById('debug-gas-ratio');
 const debugGasRatioVal    = document.getElementById('debug-gas-ratio-val');
-const debugVelDissInboreRange = document.getElementById('debug-vel-diss-inbore');
-const debugVelDissInboreVal   = document.getElementById('debug-vel-diss-inbore-val');
-const debugVelDissBloomRange  = document.getElementById('debug-vel-diss-bloom');
-const debugVelDissBloomVal    = document.getElementById('debug-vel-diss-bloom-val');
-const debugDenDissInboreRange = document.getElementById('debug-den-diss-inbore');
-const debugDenDissInboreVal   = document.getElementById('debug-den-diss-inbore-val');
-const debugDenDissBloomRange  = document.getElementById('debug-den-diss-bloom');
-const debugDenDissBloomVal    = document.getElementById('debug-den-diss-bloom-val');
+const debugVelDissRange    = document.getElementById('debug-vel-diss');
+const debugVelDissVal      = document.getElementById('debug-vel-diss-val');
+const debugDenDissRange    = document.getElementById('debug-den-diss');
+const debugDenDissVal      = document.getElementById('debug-den-diss-val');
+const debugSplatRadiusRange = document.getElementById('debug-splat-radius');
+const debugSplatRadiusVal   = document.getElementById('debug-splat-radius-val');
 const debugBloomRange      = document.getElementById('debug-bloom');
 const debugBloomVal        = document.getElementById('debug-bloom-val');
 const debugBloomOnsetRange = document.getElementById('debug-bloom-onset');
@@ -168,10 +187,6 @@ FluidSim.setBeforeStepCallback(function (dt) {
     const splats = fireSequencer.update(dt);
     const nowMs = performance.now();
 
-    // Phase-swap dissipation live — in-bore vs bloom multipliers take effect
-    // the instant the bullet's tail clears the muzzle.
-    applyPhaseDissipation();
-
     // Gate the flash glow along sim-time so it doesn't show during the in-bore
     // push — the user-visible glow belongs to muzzle exit, not the initial
     // bore push. During FIRING: 0 until simMs ≥ muzzleExitMs + bloomOnsetOffsetMs,
@@ -179,6 +194,7 @@ FluidSim.setBeforeStepCallback(function (dt) {
     // If the Flash-glow feature toggle is off, gate is forced to 0 — no halo.
     {
         const preset = CALIBER_PRESETS[selectedCaliberId];
+        const derived = deriveCaliberVisuals(preset);
         const cfg = window.DEBUG_CONFIG;
         let gate = 1.0;
         if (!cfg.bloomEnabled) {
@@ -189,7 +205,7 @@ FluidSim.setBeforeStepCallback(function (dt) {
             if (dT < 0) gate = 0;
             else if (cfg.bloomFadeInMs > 0) gate = Math.min(1, dT / cfg.bloomFadeInMs);
         }
-        FluidSim.setConfig('BLOOM_INTENSITY', preset.BLOOM_INTENSITY * cfg.bloomMult * gate);
+        FluidSim.setConfig('BLOOM_INTENSITY', derived.BLOOM_INTENSITY * cfg.bloomMult * gate);
     }
 
     for (const s of splats) {
@@ -256,30 +272,92 @@ function selectSampleDevice(id) {
         return;
     }
 
-    // Adopt the sample's preferred projection + units so it loads correctly
-    // on first click. User can still tweak axis/mode/units after via the
-    // option buttons.
+    // Adopt the sample's preferred projection so it loads correctly on first
+    // click. User can still tweak axis/mode after via the option buttons.
     deviceAxis = device.projectionAxis;
     deviceMode = device.projectionMode;
     if (device.units) deviceUnits = device.units;
     syncOptionButtons();
 
-    deviceSource = { kind: 'sample', id: device.id, url: device.url, label: device.label };
+    deviceSource = {
+        kind: 'sample',
+        id: device.id,
+        url: device.url,
+        label: device.label,
+        physicalLengthInches: device.physicalLengthInches || 0,
+    };
     reloadDeviceSource();
 }
 
 // ─── Custom mesh upload (CORS-safe: FileReader, no fetch) ───────────────────
 deviceUploadBtn.addEventListener('click', () => deviceFileInput.click());
 
+// Holds the parsed-but-not-voxelized mesh between file pick and unit choice.
+let pendingUpload = null;   // { file, label, longAxisNative, longAxisName } | null
+
 deviceFileInput.addEventListener('change', () => {
     const file = deviceFileInput.files && deviceFileInput.files[0];
     if (!file) return;
+    // Reset the input so picking the same file twice still fires 'change'.
+    deviceFileInput.value = '';
+    // Parse once up-front to measure native-unit bounds so the prompt can
+    // show sanity-checkable inches-for-each-choice next to the buttons.
+    setStatus('Measuring ' + file.name + '…');
+    Voxelizer.parseFromSource(file).then(parsed => {
+        const bounds = Voxelizer.computeBounds(parsed.vertices);
+        const rx = bounds.max[0] - bounds.min[0];
+        const ry = bounds.max[1] - bounds.min[1];
+        const rz = bounds.max[2] - bounds.min[2];
+        const longest = Math.max(rx, ry, rz);
+        const axisName = (longest === rx) ? 'X' : (longest === ry) ? 'Y' : 'Z';
+        pendingUpload = {
+            file,
+            label: file.name,
+            longAxisNative: longest,
+            longAxisName:   axisName,
+        };
+        // Offer both interpretations with a sanity-check readout.
+        const asMm  = (longest / 25.4).toFixed(2);
+        const asIn  = longest.toFixed(2);
+        uploadPromptMsg.textContent =
+            file.name + ' · long axis ' + axisName + ' = ' + longest.toFixed(1) + ' units';
+        uploadPickMmBtn.textContent = 'Treat as mm (= ' + asMm + '″)';
+        uploadPickInBtn.textContent = 'Treat as inches (= ' + asIn + '″)';
+        uploadPrompt.style.display = '';
+        setStatus('Pick units for ' + file.name);
+    }).catch(err => {
+        pendingUpload = null;
+        uploadPrompt.style.display = 'none';
+        setStatus('Error reading ' + file.name + ': ' + err.message);
+        console.error(err);
+    });
+});
+
+function commitPendingUpload(units) {
+    if (!pendingUpload) return;
     // Deselect sample buttons — this is a custom upload now.
     deviceButtons.forEach(b => b.classList.remove('active'));
     selectedDeviceId = 'custom';
     deviceOffset = { x: 0, y: 0 };
-    deviceSource = { kind: 'file', file, label: file.name };
+    deviceUnits = units;
+    syncOptionButtons();
+    deviceSource = {
+        kind: 'file',
+        file: pendingUpload.file,
+        label: pendingUpload.label,
+        physicalLengthInches: 0,  // uploads go through the unit-aware path
+    };
+    pendingUpload = null;
+    uploadPrompt.style.display = 'none';
     reloadDeviceSource();
+}
+
+uploadPickMmBtn.addEventListener('click', () => commitPendingUpload('mm'));
+uploadPickInBtn.addEventListener('click', () => commitPendingUpload('inch'));
+uploadCancelBtn.addEventListener('click', () => {
+    pendingUpload = null;
+    uploadPrompt.style.display = 'none';
+    setStatus('Upload cancelled');
 });
 
 // Re-voxelize the currently selected source with the current axis/mode/orient.
@@ -295,7 +373,6 @@ function reloadDeviceSource() {
         flipX:  deviceXform.flipX,
         flipY:  deviceXform.flipY,
         rotate: deviceXform.rotate,
-        units:  deviceUnits,
     };
 
     const p = (deviceSource.kind === 'sample')
@@ -304,11 +381,18 @@ function reloadDeviceSource() {
 
     p.then(result => {
         deviceMask = result;
+        // Stamp the current UI unit choice onto the mask so downstream physical
+        // scaling in scene.js reads the user's selection, not the voxelizer's
+        // default. Flipping the unit switch later updates this field and
+        // repaints without a re-voxelize.
+        deviceMask.units = deviceUnits;
+        // Samples carry an authored length that overrides unit math; uploads
+        // leave this zero so scene.js falls through to the unit-aware path.
+        deviceMask.physicalLengthInches = deviceSource.physicalLengthInches || 0;
         renderDevicePreview();
         canvas.classList.add('device-loaded');
         rebuildObstacles();
-        const pct = (100 * result.solidPixels / result.totalPixels).toFixed(1);
-        deviceStatus.textContent = label + ' · ' + pct + '% solid';
+        deviceStatus.textContent = formatDeviceStatus(label, result);
         setStatus(label + ' loaded · ' + result.triangleCount + ' tris · ready to fire');
     }).catch(err => {
         deviceMask = null;
@@ -316,6 +400,33 @@ function reloadDeviceSource() {
         setStatus('Error loading ' + label + ': ' + err.message);
         console.error(err);
     });
+}
+
+// Status readout: show the mesh's rendered physical length and OD so the
+// user can sanity-check the scale against catalog dimensions. The long axis
+// (u in mask space) is the bbox width; the cross-axis (v) is the height.
+// Prefer the authored physicalLengthInches when present (samples); otherwise
+// derive from worldPerPixel × unit factor (uploads).
+function formatDeviceStatus(label, result) {
+    const pct   = (100 * result.solidPixels / result.totalPixels).toFixed(1);
+    const units = result.units || 'mm';
+    const u2i   = (units === 'inch' || units === 'in') ? 1 : (1 / 25.4);
+    let lenIn, odIn;
+    if (result.physicalLengthInches > 0 && result.bboxW > 0) {
+        lenIn = result.physicalLengthInches;
+        odIn  = (result.bboxH / result.bboxW) * lenIn;
+    } else if (result.worldPerPixel > 0) {
+        lenIn = result.bboxW * result.worldPerPixel * u2i;
+        odIn  = result.bboxH * result.worldPerPixel * u2i;
+    } else {
+        return label + ' · ' + pct + '% solid';
+    }
+    // Show in the user-selected unit system for readability.
+    if (units === 'inch' || units === 'in') {
+        return label + ' · ' + lenIn.toFixed(2) + '" × ' + odIn.toFixed(2) + '" · ' + pct + '% solid';
+    }
+    const lenMm = lenIn * 25.4, odMm = odIn * 25.4;
+    return label + ' · ' + lenMm.toFixed(1) + 'mm × ' + odMm.toFixed(1) + 'mm · ' + pct + '% solid';
 }
 
 // ─── Projection-option controls (axis / mode / flip / rotate) ───────────────
@@ -330,14 +441,6 @@ axisButtons.forEach(btn => {
 modeButtons.forEach(btn => {
     btn.addEventListener('click', () => {
         deviceMode = btn.dataset.mode;
-        syncOptionButtons();
-        reloadDeviceSource();
-    });
-});
-
-unitsButtons.forEach(btn => {
-    btn.addEventListener('click', () => {
-        deviceUnits = btn.dataset.units;
         syncOptionButtons();
         reloadDeviceSource();
     });
@@ -361,13 +464,33 @@ xformRotateBtn.addEventListener('click', () => {
     reloadDeviceSource();
 });
 
+// Unit switch: cheap — only updates the mesh's unit interpretation and repaints
+// obstacles. No re-voxelization because the mask's worldPerPixel is stored in
+// the mesh's native units and only multiplied through by the unit factor in
+// scene.js.
+unitButtons.forEach(btn => {
+    btn.addEventListener('click', () => {
+        deviceUnits = btn.dataset.unit;
+        syncOptionButtons();
+        if (deviceMask) {
+            deviceMask.units = deviceUnits;
+            rebuildObstacles();
+            // Refresh the physical-size readout so mm↔inch is sanity-checkable
+            // without re-voxelizing.
+            if (deviceSource) {
+                deviceStatus.textContent = formatDeviceStatus(deviceSource.label, deviceMask);
+            }
+        }
+    });
+});
+
 function syncOptionButtons() {
     axisButtons.forEach(b =>
         b.classList.toggle('active', b.dataset.axis === deviceAxis));
     modeButtons.forEach(b =>
         b.classList.toggle('active', b.dataset.mode === deviceMode));
-    unitsButtons.forEach(b =>
-        b.classList.toggle('active', b.dataset.units === deviceUnits));
+    unitButtons.forEach(b =>
+        b.classList.toggle('active', b.dataset.unit === deviceUnits));
     xformFlipXBtn.classList.toggle('active', deviceXform.flipX);
     xformFlipYBtn.classList.toggle('active', deviceXform.flipY);
     xformRotateBtn.classList.toggle('active', deviceXform.rotate !== 0);
@@ -414,29 +537,26 @@ const fmtVal   = v => v.toFixed(2);
 // default 1.0× = preset unchanged. Feature toggles zero out their respective
 // multipliers so an off feature produces no effect even if the slider is up.
 function pushSolverMultipliers() {
-    const preset = CALIBER_PRESETS[selectedCaliberId];
-    const cfg = window.DEBUG_CONFIG;
-    const bloom = cfg.bloomEnabled ? cfg.bloomMult : 0;
-    const curl  = cfg.curlEnabled  ? cfg.curlMult  : 0;
-    FluidSim.setConfig('BLOOM_INTENSITY',      preset.BLOOM_INTENSITY * bloom);
-    FluidSim.setConfig('CURL',                 preset.CURL            * curl);
-    FluidSim.setConfig('PRESSURE',             preset.PRESSURE);
-    FluidSim.setConfig('PRESSURE_ITERATIONS',  preset.PRESSURE_ITERATIONS);
-    applyPhaseDissipation();
+    const preset  = CALIBER_PRESETS[selectedCaliberId];
+    const derived = deriveCaliberVisuals(preset);
+    const cfg     = window.DEBUG_CONFIG;
+    const bloom   = cfg.bloomEnabled ? cfg.bloomMult : 0;
+    const curl    = cfg.curlEnabled  ? cfg.curlMult  : 0;
+    FluidSim.setConfig('BLOOM_INTENSITY',     derived.BLOOM_INTENSITY * bloom);
+    FluidSim.setConfig('CURL',                derived.CURL            * curl);
+    FluidSim.setConfig('PRESSURE',            FIRE_MODEL.PRESSURE);
+    FluidSim.setConfig('PRESSURE_ITERATIONS', FIRE_MODEL.PRESSURE_ITERATIONS);
+    applySolverDissipation();
 }
 
-// Phase-swap dissipation: in-bore multiplier while bullet is still in the
-// barrel, bloom multiplier during the post-muzzle-exit vent + settling smoke
-// + IDLE (so residual smoke between shots decays under the same knob that
-// shaped it).
-function applyPhaseDissipation() {
-    const preset = CALIBER_PRESETS[selectedCaliberId];
+// Dissipation is no longer phase-swapped: set once on caliber change or
+// slider drag. Base values come from FIRE_MODEL, scaled by the live mults.
+function applySolverDissipation() {
     const cfg = window.DEBUG_CONFIG;
-    const inInbore = fireSequencer.isActive && fireSequencer.simMs < fireSequencer.muzzleExitMs;
-    const velMult = inInbore ? cfg.velocityDissInboreMult : cfg.velocityDissBloomMult;
-    const denMult = inInbore ? cfg.densityDissInboreMult  : cfg.densityDissBloomMult;
-    FluidSim.setConfig('VELOCITY_DISSIPATION', preset.VELOCITY_DISSIPATION * velMult);
-    FluidSim.setConfig('DENSITY_DISSIPATION',  preset.DENSITY_DISSIPATION  * denMult);
+    FluidSim.setConfig('VELOCITY_DISSIPATION',
+        FIRE_MODEL.VELOCITY_DISSIPATION * cfg.velocityDissMult);
+    FluidSim.setConfig('DENSITY_DISSIPATION',
+        FIRE_MODEL.DENSITY_DISSIPATION  * cfg.densityDissMult);
 }
 
 // Phase toggles
@@ -493,10 +613,9 @@ debugBulletBorderCb.addEventListener('change', () => {
 // Plume / dissipation
 bindSlider(debugGasForceRange, debugGasForceVal, 'gasForceMult',    asFloat, fmtMult);
 bindSlider(debugGasRatioRange, debugGasRatioVal, 'gasSpeedRatio',   asFloat, fmtVal);
-bindSlider(debugVelDissInboreRange, debugVelDissInboreVal, 'velocityDissInboreMult', asFloat, fmtMult, applyPhaseDissipation);
-bindSlider(debugVelDissBloomRange,  debugVelDissBloomVal,  'velocityDissBloomMult',  asFloat, fmtMult, applyPhaseDissipation);
-bindSlider(debugDenDissInboreRange, debugDenDissInboreVal, 'densityDissInboreMult', asFloat, fmtMult, applyPhaseDissipation);
-bindSlider(debugDenDissBloomRange,  debugDenDissBloomVal,  'densityDissBloomMult',  asFloat, fmtMult, applyPhaseDissipation);
+bindSlider(debugVelDissRange,     debugVelDissVal,     'velocityDissMult', asFloat, fmtMult, applySolverDissipation);
+bindSlider(debugDenDissRange,     debugDenDissVal,     'densityDissMult',  asFloat, fmtMult, applySolverDissipation);
+bindSlider(debugSplatRadiusRange, debugSplatRadiusVal, 'splatRadiusMult',  asFloat, fmtMult);
 bindSlider(debugBloomRange,    debugBloomVal,    'bloomMult',       asFloat, fmtMult, pushSolverMultipliers);
 bindSlider(debugCurlRange,     debugCurlVal,     'curlMult',        asFloat, fmtMult, pushSolverMultipliers);
 bindSlider(debugBloomOnsetRange, debugBloomOnsetVal, 'bloomOnsetOffsetMs', asFloat, v => (v >= 0 ? '+' : '') + v.toFixed(2) + ' ms');
@@ -781,7 +900,7 @@ function rebuildObstacles(bullet) {
         Math.round(deviceOffset.x),
         Math.round(deviceOffset.y),
         bullet || null,
-        deviceMask ? (deviceMask.pixelsPerInch || 0) : 0
+        deviceMask || null
     );
 
     FluidSim.uploadObstacleTexture(obstacleData, W, H);
@@ -792,5 +911,20 @@ function setStatus(msg) {
 }
 
 setStatus('Ready · press FIRE');
+
+let _lastSimW = 0, _lastSimH = 0;
+let _resizePending = false;
+window.addEventListener('resize', () => {
+    if (_resizePending) return;
+    _resizePending = true;
+    requestAnimationFrame(() => {
+        _resizePending = false;
+        const s = FluidSim.getSimSize();
+        if (s.width === _lastSimW && s.height === _lastSimH) return;
+        _lastSimW = s.width; _lastSimH = s.height;
+        rebuildObstacles(fireSequencer && fireSequencer.isActive
+            ? fireSequencer.getBullet() : null);
+    });
+});
 
 })();

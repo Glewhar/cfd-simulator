@@ -986,7 +986,11 @@ function update() {
     if (_beforeStepCallback) _beforeStepCallback(dt);
     updateColors(dt);
     applyInputs();
-    if (!config.PAUSED) step(dt);
+    // Solver dt is scaled by the global time-stretch so advection AND decay
+    // slow together under slow-motion. Sequencer still receives raw wall dt
+    // and does its own sim-ms conversion — the two paths don't cross-mix.
+    const timeStretch = (window.BALLISTIC_TIME && window.BALLISTIC_TIME.SIM_MS_PER_WALL_SEC) || 1.0;
+    if (!config.PAUSED) step(dt * timeStretch);
     render(null);
     requestAnimationFrame(update);
 }

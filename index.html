@@ -49,6 +49,26 @@
       <input type="file" id="device-file" accept=".stl,.obj" style="display:none">
       <button id="device-upload-btn" class="device-btn">Upload .stl / .obj…</button>
 
+      <!-- Upload units prompt — revealed after file pick, before voxelizing.
+           STL/OBJ carry no unit tag, so the user picks here. Button labels
+           show the resulting inches so the choice is sanity-checkable. -->
+      <div id="upload-units-prompt" style="display:none">
+        <div class="upload-prompt-msg" id="upload-prompt-msg">Mesh long axis: —</div>
+        <div class="upload-prompt-buttons">
+          <button class="device-btn" id="upload-pick-mm">Treat as mm</button>
+          <button class="device-btn" id="upload-pick-in">Treat as inches</button>
+          <button class="device-btn" id="upload-cancel">Cancel</button>
+        </div>
+      </div>
+
+      <!-- Mesh units — STL/OBJ carry no unit tag. Picks the factor used to
+           convert mesh dimensions into sim texels (via caliber texels-per-inch). -->
+      <div class="device-opt-row">
+        <span class="device-opt-label">Units</span>
+        <button class="opt-btn active" id="unit-mm"  data-unit="mm">mm</button>
+        <button class="opt-btn"        id="unit-in"  data-unit="inch">inch</button>
+      </div>
+
       <!-- Projection axis -->
       <div class="device-opt-row">
         <span class="device-opt-label">Axis</span>
@@ -62,13 +82,6 @@
         <span class="device-opt-label">Mode</span>
         <button class="opt-btn active" data-mode="section">Section</button>
         <button class="opt-btn"        data-mode="silhouette">Silhouette</button>
-      </div>
-
-      <!-- Mesh units (how to interpret STL/OBJ vertex values) -->
-      <div class="device-opt-row">
-        <span class="device-opt-label">Units</span>
-        <button class="opt-btn"        data-units="mm">mm</button>
-        <button class="opt-btn active" data-units="inch">inch</button>
       </div>
 
       <!-- Flip + rotate (re-voxelize in place) -->
@@ -135,41 +148,36 @@
             <input type="range" class="debug-slider" id="debug-gas-ratio" min="0.1" max="10.0" step="0.05" value="0.1">
             <span class="debug-slider-val" id="debug-gas-ratio-val">0.10</span>
           </div>
-          <div class="debug-slider-row" title="How fast moving gas slows down while the bullet is still inside the barrel. Higher = in-bore jet loses momentum sooner, flash stays compact.">
-            <span class="debug-slider-label">Motion fade (in barrel)</span>
-            <input type="range" class="debug-slider" id="debug-vel-diss-inbore" min="0.1" max="3" step="0.05" value="0.5">
-            <span class="debug-slider-val" id="debug-vel-diss-inbore-val">0.50×</span>
+          <div class="debug-slider-row" title="How fast moving gas slows down. Higher = plume loses momentum sooner and dies down faster.">
+            <span class="debug-slider-label">Velocity dissipation</span>
+            <input type="range" class="debug-slider" id="debug-vel-diss" min="0.1" max="3" step="0.05" value="1">
+            <span class="debug-slider-val" id="debug-vel-diss-val">1.00×</span>
           </div>
-          <div class="debug-slider-row" title="How fast moving gas slows down after the bullet has exited the muzzle, and during the quiet time between shots. Higher = plume dies down sooner.">
-            <span class="debug-slider-label">Motion fade (after exit)</span>
-            <input type="range" class="debug-slider" id="debug-vel-diss-bloom" min="0.1" max="3" step="0.05" value="0.5">
-            <span class="debug-slider-val" id="debug-vel-diss-bloom-val">0.50×</span>
+          <div class="debug-slider-row" title="How fast visible smoke/dye fades from view. Higher = cloud evaporates sooner.">
+            <span class="debug-slider-label">Density dissipation</span>
+            <input type="range" class="debug-slider" id="debug-den-diss" min="0.1" max="3" step="0.05" value="1">
+            <span class="debug-slider-val" id="debug-den-diss-val">1.00×</span>
           </div>
-          <div class="debug-slider-row" title="How fast visible smoke/dye fades from view while the bullet is still inside the barrel. Higher = in-bore flash fades sooner.">
-            <span class="debug-slider-label">Smoke fade (in barrel)</span>
-            <input type="range" class="debug-slider" id="debug-den-diss-inbore" min="0.1" max="3" step="0.05" value="0.25">
-            <span class="debug-slider-val" id="debug-den-diss-inbore-val">0.25×</span>
-          </div>
-          <div class="debug-slider-row" title="How fast visible smoke/dye fades after the bullet has exited, and during the quiet time between shots. Higher = cloud evaporates sooner.">
-            <span class="debug-slider-label">Smoke fade (after exit)</span>
-            <input type="range" class="debug-slider" id="debug-den-diss-bloom" min="0.1" max="3" step="0.05" value="0.9">
-            <span class="debug-slider-val" id="debug-den-diss-bloom-val">0.90×</span>
+          <div class="debug-slider-row" title="Size of each injected gas blob. Scales both the in-bore push and the trailing smoke puffs.">
+            <span class="debug-slider-label">Plume radius</span>
+            <input type="range" class="debug-slider" id="debug-splat-radius" min="0.1" max="3" step="0.05" value="1">
+            <span class="debug-slider-val" id="debug-splat-radius-val">1.00×</span>
           </div>
           <div class="debug-slider-row" title="Halo brightness on the hot gas (camera bloom effect). 0 = raw color, no glow. Toggle the checkbox to disable the halo entirely.">
             <input type="checkbox" class="debug-feature-toggle" id="debug-bloom-enabled" checked>
             <span class="debug-slider-label">Flash glow</span>
-            <input type="range" class="debug-slider" id="debug-bloom" min="0" max="0.6" step="0.05" value="0.6">
-            <span class="debug-slider-val" id="debug-bloom-val">0.60×</span>
+            <input type="range" class="debug-slider" id="debug-bloom" min="0" max="1.4" step="0.05" value="1.4">
+            <span class="debug-slider-val" id="debug-bloom-val">1.40×</span>
           </div>
           <div class="debug-slider-row" title="When the flash glow is allowed to turn on, measured from the moment the bullet's tail clears the muzzle. 0 = exactly at muzzle exit. Negative = earlier. Positive = later.">
             <span class="debug-slider-label">Glow delay</span>
-            <input type="range" class="debug-slider" id="debug-bloom-onset" min="0" max="0.5" step="0.05" value="0">
-            <span class="debug-slider-val" id="debug-bloom-onset-val">+0.00 ms</span>
+            <input type="range" class="debug-slider" id="debug-bloom-onset" min="-0.3" max="0.3" step="0.01" value="-0.1">
+            <span class="debug-slider-val" id="debug-bloom-onset-val">-0.10 ms</span>
           </div>
           <div class="debug-slider-row" title="How gradually the glow swells from off to full after it's allowed to turn on. 0 = instant pop. Larger = smooth swell.">
             <span class="debug-slider-label">Glow ramp</span>
-            <input type="range" class="debug-slider" id="debug-bloom-fade" min="0" max="0.15" step="0.01" value="0.05">
-            <span class="debug-slider-val" id="debug-bloom-fade-val">0.05 ms</span>
+            <input type="range" class="debug-slider" id="debug-bloom-fade" min="0" max="0.15" step="0.01" value="0">
+            <span class="debug-slider-val" id="debug-bloom-fade-val">0.00 ms</span>
           </div>
           <div class="debug-slider-row" title="How much the gas curls and eddies on itself (vorticity). Higher = more smoke-ring and turbulent behavior. Toggle the checkbox to get perfectly laminar flow.">
             <input type="checkbox" class="debug-feature-toggle" id="debug-curl-enabled" checked>
